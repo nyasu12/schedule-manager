@@ -33,7 +33,7 @@ jobs:
         run: node --check public/app.js
 
   materialize-readable-source:
-    if: github.event_name == 'pull_request' && github.event.action == 'reopened'
+    if: github.event_name == 'pull_request'
     needs: build-and-check
     runs-on: ubuntu-latest
     permissions:
