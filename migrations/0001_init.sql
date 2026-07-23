@@ -1,0 +1,3 @@
+-- Compatibility placeholder.
+-- The original production database already has migration 0001 applied.
+-- A fresh database receives the complete runtime schema in 0003.
