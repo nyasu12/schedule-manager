@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "schedule-manager",
+  "main": "./src/index.js",
+  "compatibility_date": "2026-07-23",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/files/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "schedule-manager-db",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "schedule-manager-files"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "空港送迎管理",
+    "FLIGHT_MONTHLY_LIMIT": "300",
+    "VISION_MONTHLY_LIMIT": "900",
+    "OPENAI_MODEL": "gpt-5-mini",
+    "OPENAI_MONTHLY_LIMIT": "300",
+    "OPENAI_WEB_MODEL": "gpt-5.4-nano",
+    "OPENAI_WEB_MONTHLY_LIMIT": "100"
+  }
+}
