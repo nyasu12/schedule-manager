@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
-    "user:set": "node scripts/set-user.mjs"
+    "user:set": "node scripts/set-user.mjs",
+    "build": "node scripts/build.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.113.0"
