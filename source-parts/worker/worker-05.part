@@ -1,0 +1,240 @@
+FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('ファイルが見つかりません。', 404);
+  const mime = String(row.mime_type || '').toLowerCase();
+  const supported = ['image/jpeg','image/png','image/webp','image/gif','application/pdf'];
+  if (!supported.includes(mime)) return fail('この形式はGoogle Vision読み取り対象外です。JPG・PNG・WebP・GIF・PDFを使用してください。');
+  if (safeInt(row.size_bytes) > 7 * 1024 * 1024) return fail('OCRは1ファイル7MBまでです。原本は20MBまで保存できます。');
+  const conservativeUnits = mime === 'application/pdf' ? 5 : 1;
+  const used = await getUsage(env, 'vision');
+  const limit = safeInt(env.VISION_MONTHLY_LIMIT, 900);
+  if (used + conservativeUnits > limit) return fail(`Google Visionのアプリ内上限（${limit}単位/月）に達するため読み取りを停止しました。`, 429);
+  const object = await env.FILES.get(row.r2_key);
+  if (!object) return fail('R2上のファイルが見つかりません。', 404);
+  const content = arrayBufferToBase64(await object.arrayBuffer());
+  let endpoint;
+  let payload;
+  if (mime === 'application/pdf') {
+    endpoint = `https://vision.googleapis.com/v1/files:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ inputConfig: { mimeType: 'application/pdf', content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] }, pages: [1,2,3,4,5] }] };
+  } else {
+    endpoint = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ image: { content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] } }] };
+  }
+  const vision = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const data = await vision.json().catch(() => ({}));
+  if (!vision.ok) return fail('Google Visionの読み取りに失敗しました。', 502, data?.error?.message || data);
+  let texts = [];
+  let units = 1;
+  if (mime === 'application/pdf') {
+    const pages = data?.responses?.[0]?.responses || [];
+    units = Math.max(1, pages.length);
+    texts = pages.map((p) => p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || '').filter(Boolean);
+  } else {
+    const p = data?.responses?.[0] || {};
+    texts = [p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || ''].filter(Boolean);
+  }
+  const text = texts.join('\n\n--- PAGE ---\n\n').trim();
+  await addUsage(env, 'vision', units);
+  const candidates = extractOcrCandidates(text);
+  await env.DB.prepare('UPDATE app_files_v2 SET ocr_text=?,ocr_json=?,ocr_checked_at=CURRENT_TIMESTAMP WHERE id=?').bind(text, JSON.stringify(candidates), id).run();
+  return json({ ok: true, text, candidates, units, used: used + units, limit });
+}
+
+function airportValueParts(value) {
+  if (!value) return [];
+  if (typeof value === 'string') return [value];
+  if (typeof value !== 'object') return [String(value)];
+  return [
+    value.code, value.code_iata, value.code_icao, value.code_lid,
+    value.iata, value.icao, value.lid,
+    value.alternate_ident, value.name, value.airport_name,
+  ].filter(Boolean).map(String);
+}
+function airportAliases(value) {
+  const out = new Set();
+  for (const part of airportValueParts(value)) {
+    const upper = String(part).toUpperCase().trim();
+    if (!upper) continue;
+    out.add(upper);
+    for (const code of upper.match(/\b[A-Z]{3,4}\b/g) || []) out.add(code);
+  }
+  return out;
+}
+function bestAirportCode(value) {
+  const aliases = [...airportAliases(value)];
+  return aliases.find((x) => /^[A-Z]{3}$/.test(x)) || aliases.find((x) => /^[A-Z]{4}$/.test(x)) || '';
+}
+function airportMatches(expected, actual) {
+  const wanted = airportAliases(expected);
+  if (!wanted.size) return true;
+  const got = airportAliases(actual);
+  if (!got.size) return false;
+  for (const x of wanted) if (got.has(x)) return true;
+  return false;
+}
+function airportTimeZone(value) {
+  const country = routeCountry(airportValueParts(value).join(' '));
+  if (country === 'JP') return 'Asia/Tokyo';
+  if (country === 'PH') return 'Asia/Manila';
+  return 'UTC';
+}
+function parseAeroTime(value, airport) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('ja-JP', { timeZone: airportTimeZone(airport), hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+}
+function parseAeroDate(value, airport) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: airportTimeZone(airport), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function addIsoDays(date, days) {
+  const clean = normalizeDate(date);
+  if (!clean) return '';
+  const d = new Date(`${clean}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function normalizeIdent(value) {
+  return trim(value, 80).toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+function aeroIdentValues(f) {
+  return [f?.ident_iata, f?.actual_ident_iata, f?.ident, f?.ident_icao, f?.actual_ident, f?.actual_ident_icao]
+    .map(normalizeIdent).filter(Boolean);
+}
+function targetIdent(row) {
+  const raw = normalizeIdent(row?.flight_number);
+  const airline = normalizeIdent(row?.airline_code);
+  if (!raw) return '';
+  return /[A-Z]/.test(raw) ? raw : `${airline}${raw}`;
+}
+function flightNumberOnly(row) {
+  const raw = normalizeIdent(row?.flight_number);
+  const airline = normalizeIdent(row?.airline_code);
+  if (!raw) return '';
+  if (airline && raw.startsWith(airline)) return raw.slice(airline.length);
+  const m = raw.match(/(\d{1,4}[A-Z]?)$/);
+  return m ? m[1] : raw;
+}
+function identMatches(row, f) {
+  const target = targetIdent(row);
+  const number = flightNumberOnly(row);
+  const airline = normalizeIdent(row?.airline_code);
+  const values = aeroIdentValues(f);
+  if (target && values.includes(target)) return true;
+  if (!number) return false;
+  return values.some((v) => v.endsWith(number) && (!airline || v.startsWith(airline) || v === target));
+}
+function aeroOriginBundle(f) { return [...airportValueParts(f?.origin), f?.origin_iata, f?.origin_icao, f?.origin_lid].filter(Boolean).join(' '); }
+function aeroDestinationBundle(f) { return [...airportValueParts(f?.destination), f?.destination_iata, f?.destination_icao, f?.destination_lid].filter(Boolean).join(' '); }
+function aeroOrigin(f) { return f?.origin_iata || f?.origin?.code_iata || f?.origin_lid || f?.origin?.code_lid || f?.origin_icao || f?.origin?.code_icao || bestAirportCode(f?.origin) || ''; }
+function aeroDestination(f) { return f?.destination_iata || f?.destination?.code_iata || f?.destination_lid || f?.destination?.code_lid || f?.destination_icao || f?.destination?.code_icao || bestAirportCode(f?.destination) || ''; }
+function flightDateMatches(row, f) {
+  if (!row?.flight_date) return true;
+  const departure = f?.scheduled_out || f?.scheduled_off || f?.estimated_out || f?.estimated_off || f?.actual_out || f?.actual_off;
+  return parseAeroDate(departure, row.origin || aeroOrigin(f)) === row.flight_date;
+}
+function flightRouteMatches(row, f) {
+  return airportMatches(row?.origin, aeroOriginBundle(f)) && airportMatches(row?.destination, aeroDestinationBundle(f));
+}
+function pickExactAeroFlight(data, row, collection = 'flights') {
+  const rows = Array.isArray(data?.[collection]) ? data[collection] : [];
+  return rows.find((f) => identMatches(row, f) && flightDateMatches(row, f) && flightRouteMatches(row, f)) || null;
+}
+function displayAeroIdent(f) {
+  const values = [f?.ident_iata, f?.actual_ident_iata, f?.ident, f?.actual_ident, f?.ident_icao, f?.actual_ident_icao]
+    .map((x) => trim(x, 40)).filter(Boolean);
+  return values[0] || '';
+}
+function possibleChangeCandidates(data, row, collection = 'scheduled') {
+  const rows = Array.isArray(data?.[collection]) ? data[collection] : [];
+  const seen = new Set();
+  const candidates = [];
+  for (const f of rows) {
+    if (!flightDateMatches(row, f) || !flightRouteMatches(row, f) || identMatches(row, f)) continue;
+    const flightNumber = displayAeroIdent(f);
+    if (!flightNumber) continue;
+    const origin = row.origin || aeroOrigin(f);
+    const destination = row.destination || aeroDestination(f);
+    const scheduledDeparture = parseAeroTime(f.scheduled_out || f.scheduled_off, origin);
+    const scheduledArrival = parseAeroTime(f.scheduled_in || f.scheduled_on, destination);
+    const key = `${normalizeIdent(flightNumber)}|${scheduledDeparture}|${scheduledArrival}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      flightNumber,
+      scheduledDeparture,
+      scheduledArrival,
+      origin: aeroOrigin(f) || bestAirportCode(row.origin),
+      destination: aeroDestination(f) || bestAirportCode(row.destination),
+    });
+  }
+  return candidates.slice(0, 8);
+}
+function possibleChangeNote(row, candidates) {
+  const registered = targetIdent(row) || trim(row.flight_number, 30);
+  const list = candidates.map((c) => `${c.flightNumber} ${c.scheduledDeparture || '--:--'}→${c.scheduledArrival || '--:--'}`).join(' / ');
+  return `登録便 ${registered} は指定日・経路で確認できませんでした。同日・同一路線の別便候補：${list}。便変更の可能性あり。`;
+}
+async function applyPossibleChangeCheck(env, id, row, candidates) {
+  const note = possibleChangeNote(row, candidates);
+  await env.DB.prepare(`UPDATE app_flights_v2
+    SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    WHERE id=?`)
+    .bind('便変更の可能性あり', 'AeroAPI公開スケジュール', '', note, id).run();
+  return note;
+}
+async function aeroGet(env, url) {
+  const used = await getUsage(env, 'flight');
+  const limit = safeInt(env.FLIGHT_MONTHLY_LIMIT, 300);
+  if (used >= limit) throw new Error(`便確認のAeroAPI問い合わせ上限（${limit}回/月）に達しました。`);
+  const response = await fetch(url, { headers: { 'x-apikey': env.FLIGHTAWARE_API_KEY, accept: 'application/json' } });
+  const data = await response.json().catch(() => ({}));
+  // AeroAPIは結果0件でも問い合わせ料金の対象になり得るため、HTTPリクエスト単位でカウントする。
+  await addUsage(env, 'flight', 1);
+  return { response, data, used: used + 1, limit };
+}
+function aeroAuthError(result) {
+  return result?.response?.status === 401 || result?.response?.status === 403;
+}
+function aeroRateError(result) { return result?.response?.status === 429; }
+function normalizeAeroStatus(f) {
+  if (f?.cancelled) return '欠航';
+  if (f?.diverted) return '目的地変更';
+  return trim(f?.status, 80) || '確認済';
+}
+async function applyFlightCheck(env, id, result) {
+  await env.DB.prepare(`UPDATE app_flights_v2
+    SET changed_departure=?,changed_arrival=?,terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    WHERE id=?`)
+    .bind(
+      normalizeTime(result.changedDeparture), normalizeTime(result.changedArrival), trim(result.terminal, 80), trim(result.gate, 80),
+      trim(result.status, 80) || '確認済', trim(result.source, 120), trim(result.url, 1000), trim(result.note, 1000), id,
+    ).run();
+}
+function operationalResult(row, f) {
+  const origin = row.origin || aeroOrigin(f);
+  const destination = row.destination || aeroDestination(f);
+  return {
+    changedDeparture: parseAeroTime(f.actual_out || f.estimated_out || f.actual_off || f.estimated_off || f.scheduled_out, origin),
+    changedArrival: parseAeroTime(f.actual_in || f.estimated_in || f.actual_on || f.estimated_on || f.scheduled_in, destination),
+    terminal: trim(f.terminal_destination || f.terminal_origin || row.terminal, 80),
+    gate: trim(f.gate_destination || f.gate_origin || row.gate, 80),
+    status: normalizeAeroStatus(f),
+    source: 'AeroAPI実運航情報',
+    url: '',
+    note: '便番号・搭乗日・出発地・到着地が一致した実運航情報を反映しました。',
+  };
+}
+function scheduleResult(row, f) {
+  const origin = row.origin || aeroOrigin(f);
+  const destination = row.destination || aeroDestination(f);
+  return {
+    changedDeparture: parseAeroTime(f.scheduled_out, origin),
+    changedArrival: parseAeroTime(f.scheduled_in, destination),
+    terminal: row.terminal || '',
+    gate: row.gate || '',
+    status: '公開スケジュール確認済',
+    
