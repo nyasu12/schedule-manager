@@ -1,0 +1,10 @@
+AUTH_SECRET=replace-with-long-random-secret
+GOOGLE_VISION_API_KEY=
+FLIGHTAWARE_API_KEY=
+OPENAI_API_KEY=
+# ローカル開発時だけ必要なら変更。Cloudflare本番は wrangler.jsonc の vars を使用。
+OPENAI_MODEL=gpt-5-mini
+OPENAI_MONTHLY_LIMIT=300
+
+OPENAI_WEB_MODEL=gpt-5.4-nano
+OPENAI_WEB_MONTHLY_LIMIT=100
