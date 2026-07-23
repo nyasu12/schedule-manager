@@ -30,13 +30,27 @@ jobs:
       - name: Rebuild exact v0.3.13 runtime sources
         run: node scripts/build.mjs
 
-      - name: Apply final v0.4.0 generalization patch
+      - name: Restore base metadata for deterministic patching
+        run: git checkout origin/main -- README.md package.json
+
+      - name: Apply validated v0.4.0 base patch
         shell: bash
         run: |
-          cat .patchpayload3/patch-*.b64 | base64 --decode | gzip --decompress > /tmp/v040.patch
-          git apply --check /tmp/v040.patch
-          git apply /tmp/v040.patch
-          rm -rf source-parts .patchpayload .patchpayload2 .patchpayload3 .materialize
+          cat .patchpayload/patch-*.b64 | base64 --decode | gzip --decompress > /tmp/v040-base.patch
+          git apply --check /tmp/v040-base.patch
+          git apply /tmp/v040-base.patch
+
+      - name: Apply final generalization delta
+        shell: bash
+        run: |
+          cat .patchdelta2/delta-*.b64 | base64 --decode | gzip --decompress > /tmp/v040-delta.patch
+          git apply --check /tmp/v040-delta.patch
+          git apply /tmp/v040-delta.patch
+
+      - name: Remove publication helpers
+        shell: bash
+        run: |
+          rm -rf source-parts .patchpayload .patchpayload2 .patchpayload3 .patchdelta .patchdelta2 .materialize .materialize-final
           rm -f scripts/build.mjs
           rm -f .github/workflows/generalize-v040.yml
           rm -f .github/workflows/generalize-v040-pr.yml
