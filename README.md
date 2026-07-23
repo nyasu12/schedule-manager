@@ -61,6 +61,23 @@ The public version does **not** contain:
 
 `wrangler.jsonc`, `.dev.vars`, and other local secret files are ignored by Git.
 
+## Source layout
+
+The two large runtime files are stored as ordered source fragments under `source-parts/` so this portfolio snapshot can be published and reviewed safely through the repository tooling used to create it.
+
+```text
+source-parts/worker/      -> src/index.js
+source-parts/public-app/  -> public/app.js
+```
+
+Run the build command to reconstruct the runtime files exactly:
+
+```bash
+npm run build
+```
+
+`npm run dev` and `npm run deploy` run this build step automatically. The generated `src/index.js` and `public/app.js` files are intentionally excluded from Git.
+
 ## Setup
 
 ### 1. Install dependencies
