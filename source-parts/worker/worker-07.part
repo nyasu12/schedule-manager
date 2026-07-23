@@ -1,0 +1,32 @@
+
+      if (path === '/api/bootstrap' && request.method === 'GET') return await bootstrap(request, env);
+      if (path === '/api/login' && request.method === 'POST') return await login(request, env);
+      if (path === '/api/logout' && request.method === 'POST') return logout();
+      if (path === '/api/ocr/preview' && request.method === 'POST') return await previewTravelDocument(request, env);
+      if (path === '/api/schedules' && request.method === 'POST') return await saveSchedule(request, env);
+      let match = path.match(/^\/api\/schedules\/([^/]+)\/departure-time$/);
+      if (match && request.method === 'POST') return await updateDepartureTime(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/schedules\/([^/]+)$/);
+      if (match && request.method === 'DELETE') return await deleteSchedule(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/schedules\/([^/]+)\/files$/);
+      if (match && request.method === 'POST') return await uploadFile(request, env, decodeURIComponent(match[1]), url);
+      match = path.match(/^\/api\/master\/(company|store|employee|car)$/);
+      if (match && request.method === 'POST') return await saveMaster(request, env, match[1]);
+      match = path.match(/^\/api\/master\/(company|store|employee|car)\/([^/]+)$/);
+      if (match && request.method === 'DELETE') return await deactivateMaster(request, env, match[1], decodeURIComponent(match[2]));
+      match = path.match(/^\/api\/files\/([^/]+)\/ocr$/);
+      if (match && request.method === 'POST') return await runVision(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/files\/([^/]+)$/);
+      if (match && request.method === 'DELETE') return await deleteFile(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/flights\/([^/]+)\/check$/);
+      if (match && request.method === 'POST') return await checkFlight(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/files\/([^/]+)$/);
+      if (match && request.method === 'GET') return await serveFile(env, decodeURIComponent(match[1]));
+      if (path.startsWith('/api/')) return fail('APIが見つかりません。', 404);
+      return await env.ASSETS.fetch(request);
+    } catch (e) {
+      console.error(e);
+      return fail('サーバー処理でエラーが発生しました。', 500, e?.message || String(e));
+    }
+  },
+};
