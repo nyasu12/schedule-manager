@@ -28,15 +28,15 @@ jobs:
         run: npm install
 
       - name: Rebuild exact v0.3.13 runtime sources
-        run: npm run build
+        run: node scripts/build.mjs
 
-      - name: Reconstruct and apply v0.4.0 patch
+      - name: Apply final v0.4.0 generalization patch
         shell: bash
         run: |
-          cat .patchpayload/patch-*.b64 | base64 --decode | gzip --decompress > /tmp/v040.patch
+          cat .patchpayload2/patch-*.b64 | base64 --decode | gzip --decompress > /tmp/v040.patch
           git apply --check /tmp/v040.patch
           git apply /tmp/v040.patch
-          rm -rf source-parts .patchpayload .materialize
+          rm -rf source-parts .patchpayload .patchpayload2 .materialize
           rm -f scripts/build.mjs
           rm -f .github/workflows/generalize-v040.yml
           rm -f .github/workflows/generalize-v040-pr.yml
