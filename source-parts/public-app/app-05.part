@@ -1,0 +1,106 @@
+ons}</select></label></div>`;
+  $('masterFields').innerHTML = html;
+  if (row && type === 'store' && $('masterCompany')) $('masterCompany').value = row.companyId || '';
+  if (row && (type === 'employee' || type === 'car') && $('masterRegion')) $('masterRegion').value = row.regionId || '';
+}
+function renderMasterList() {
+  qsa('[data-master-type]').forEach((b) => b.classList.toggle('active', b.dataset.masterType === state.masterType));
+  const rows = masterRows(state.masterType).filter((x) => x.active);
+  $('masterList').innerHTML = rows.length ? rows.map((x) => {
+    let sub = '';
+    if (state.masterType === 'company') sub = `<span class="color-dot" style="background:${escapeHtml(x.color)}"></span>${escapeHtml(x.code || '')}`;
+    if (state.masterType === 'store') sub = `${escapeHtml(companyById(x.companyId)?.name || '会社未設定')}　${escapeHtml(x.code || '')}`;
+    if (state.masterType === 'employee' || state.masterType === 'car') sub = escapeHtml(regionName(x.regionId));
+    return `<div class="settings-row"><div><strong>${escapeHtml(x.name)}</strong><small>${sub}</small></div><div class="settings-row-actions"><button type="button" class="btn small" data-edit-master="${escapeHtml(x.id)}">編集</button><button type="button" class="btn small danger" data-delete-master="${escapeHtml(x.id)}">削除</button></div></div>`;
+  }).join('') : '<div class="empty">登録はありません。</div>';
+  qsa('[data-edit-master]', $('masterList')).forEach((b) => b.addEventListener('click', () => {
+    const row = masterRows(state.masterType).find((x) => x.id === b.dataset.editMaster);
+    if (!row) return;
+    $('masterId').value = row.id;
+    renderMasterFields(row);
+  }));
+  qsa('[data-delete-master]', $('masterList')).forEach((b) => b.addEventListener('click', () => deleteMaster(b.dataset.deleteMaster)));
+}
+function renderSettings() { resetMasterForm(); renderMasterList(); }
+async function saveMaster(event) {
+  event.preventDefault();
+  try {
+    const body = { id: $('masterId').value, name: $('masterName').value.trim() };
+    if (state.masterType === 'company') { body.code = $('masterCode').value.trim(); body.color = $('masterColor').value; }
+    if (state.masterType === 'store') { body.companyId = $('masterCompany').value; body.code = $('masterCode').value.trim(); }
+    if (state.masterType === 'employee' || state.masterType === 'car') body.regionId = $('masterRegion').value;
+    await api(`/api/master/${state.masterType}`, { method: 'POST', body });
+    await loadData(false);
+    renderSettings();
+    toast('基本設定を保存しました。');
+  } catch (e) { toast(e.message, 3500); }
+}
+async function deleteMaster(id) {
+  if (!confirm('この設定を無効にしますか？')) return;
+  try { await api(`/api/master/${state.masterType}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadData(false); renderSettings(); toast('基本設定を無効にしました。'); }
+  catch (e) { toast(e.message, 3500); }
+}
+
+function bindEvents() {
+  $('loginButton').addEventListener('click', () => { $('loginError').hidden = true; $('loginPassword').value = ''; openModal('loginModal'); setTimeout(() => $('loginUsername').focus(), 0); });
+  $('logoutButton').addEventListener('click', async () => { try { await api('/api/logout', { method: 'POST' }); await loadData(false); toast('ログアウトしました。'); } catch (e) { toast(e.message); } });
+  $('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const error = $('loginError'); error.hidden = true; $('loginSubmit').disabled = true;
+    try {
+      await api('/api/login', { method: 'POST', body: { username: $('loginUsername').value.trim(), password: $('loginPassword').value } });
+      closeModal('loginModal');
+      await loadData(false);
+      toast('ログインしました。');
+    } catch (err) { error.textContent = err.message; error.hidden = false; }
+    finally { $('loginSubmit').disabled = false; }
+  });
+  qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.closeModal)));
+  qsa('.modal-backdrop').forEach((el) => el.addEventListener('click', (e) => { if (e.target === el) el.hidden = true; }));
+  qsa('[data-mode]').forEach((b) => b.addEventListener('click', () => { state.mode = b.dataset.mode; closeDrawer(); renderMode(); }));
+  $('regionFilter').addEventListener('change', renderMode);
+  $('purposeFilter').addEventListener('change', renderMode);
+  $('employeeFilter').addEventListener('change', renderMode);
+  $('storeFilter').addEventListener('change', renderMode);
+  $('prevMonth').addEventListener('click', () => { state.viewMonth.setMonth(state.viewMonth.getMonth() - 1); renderMode(); });
+  $('nextMonth').addEventListener('click', () => { state.viewMonth.setMonth(state.viewMonth.getMonth() + 1); renderMode(); });
+  $('thisMonth').addEventListener('click', () => { const n = new Date(); state.viewMonth = new Date(n.getFullYear(), n.getMonth(), 1); state.selectedDate = localDateString(n); renderMode(); });
+  $('addScheduleButton').addEventListener('click', () => openScheduleForm(''));
+  $('addStoreRow').addEventListener('click', () => addStoreRow());
+  $('addFlightRow').addEventListener('click', () => addFlightRow({ flightDate: $('scheduleDate').value }));
+  $('addFacePhoto').addEventListener('click', addFacePhotoUploadRow);
+  $('addArrivalItinerary').addEventListener('click', () => addItineraryUploadRow('入国'));
+  $('addDepartureItinerary').addEventListener('click', () => addItineraryUploadRow('帰国'));
+  $('readArrivalItinerary').addEventListener('click', () => autoReadItineraryDirection('入国'));
+  $('readDepartureItinerary').addEventListener('click', () => autoReadItineraryDirection('帰国'));
+  $('schedulePurpose').addEventListener('change', updateScheduleConditionalFields);
+  $('scheduleRegion').addEventListener('change', () => { renderChoicePicker('employee'); renderChoicePicker('car'); });
+  $('employeePicker').addEventListener('change', () => addPickerChoice('employee'));
+  $('carPicker').addEventListener('change', () => addPickerChoice('car'));
+  qsa('[data-clear-choices]').forEach((b) => b.addEventListener('click', () => setChoiceIds(b.dataset.clearChoices.startsWith('employee') ? 'employee' : 'car', [])));
+  $('scheduleForm').addEventListener('submit', saveSchedule);
+  $('departureTimeForm').addEventListener('submit', saveDepartureTime);
+  $('deleteScheduleButton').addEventListener('click', deleteSchedule);
+  qsa('[data-open-settings]').forEach((b) => b.addEventListener('click', () => { if (!isAdmin()) return; state.masterType = 'company'; renderSettings(); openModal('settingsModal'); closeDrawer(); }));
+  qsa('[data-master-type]').forEach((b) => b.addEventListener('click', () => { state.masterType = b.dataset.masterType; renderSettings(); }));
+  $('masterForm').addEventListener('submit', saveMaster);
+  $('masterReset').addEventListener('click', resetMasterForm);
+  $('mobileMenuButton').addEventListener('click', () => { $('drawerBackdrop').hidden = false; });
+  $('closeDrawer').addEventListener('click', closeDrawer);
+  $('drawerBackdrop').addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { qsa('.modal-backdrop').forEach((x) => { x.hidden = true; }); closeDrawer(); } });
+}
+function closeDrawer() { $('drawerBackdrop').hidden = true; }
+
+async function init() {
+  bindEvents();
+  const now = new Date();
+  state.viewMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  state.selectedDate = localDateString(now);
+  resetFacePhotoUploadRows();
+  resetItineraryUploadRows();
+  renderMode();
+  await loadData(true);
+}
+
+document.addEventListener('DOMContentLoaded', init);
