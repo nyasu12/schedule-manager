@@ -1,10 +1,8 @@
 name: Materialize portfolio source
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/materialize-source.yml'
+  pull_request:
+    types: [reopened]
 
 permissions:
   contents: write
@@ -13,8 +11,10 @@ jobs:
   materialize:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -68,6 +68,10 @@ scripts/              User-management utilities
           text = text[:start] + replacement + text[end:]
           text = text.replace(
               'GitHub Actions rebuilds both runtime files and runs JavaScript syntax checks on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.',
+              'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot was also validated against the SHA-256 hashes of the sanitized source before the source files were materialized.'
+          )
+          text = text.replace(
+              'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.',
               'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot was also validated against the SHA-256 hashes of the sanitized source before the source files were materialized.'
           )
           readme.write_text(text)
