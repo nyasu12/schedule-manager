@@ -1,0 +1,125 @@
+    if (saved.scheduledDeparture && c.scheduledDeparture && !nearMinutes(saved.scheduledDeparture, c.scheduledDeparture, 180)) return false;
+    return true;
+  }).slice(0, 8);
+}
+function aeroMatchesList(data) {
+  return Array.isArray(data?.flights) ? data.flights : Array.isArray(data?.results) ? data.results : [];
+}
+async function aeroFetch(env, path, params = {}) {
+  const url = new URL(`https://aeroapi.flightaware.com/aeroapi${path}`);
+  for (const [k, v] of Object.entries(params)) if (v !== '' && v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  const response = await fetch(url, { headers: { 'x-apikey': env.FLIGHTAWARE_API_KEY } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const e = new Error(`FlightAware AeroAPI HTTP ${response.status}`);
+    e.status = response.status;
+    e.details = data;
+    throw e;
+  }
+  return data;
+}
+function routeMatchesSaved(flight, saved) {
+  if (!flight || !saved) return false;
+  const origin = airportCode(flight.origin);
+  const destination = airportCode(flight.destination);
+  if (saved.origin && origin && origin !== saved.origin.toUpperCase()) return false;
+  if (saved.destination && destination && destination !== saved.destination.toUpperCase()) return false;
+  return true;
+}
+function dateMatchesSaved(flight, saved) {
+  if (!saved?.flightDate) return true;
+  const date = ymd(flight?.scheduled_out || flight?.scheduled_off || flight?.scheduled_departure || flight?.scheduled_departure_time);
+  return !date || date === saved.flightDate;
+}
+async function fetchExactOperationalFlights(env, ident, saved) {
+  const params = {};
+  if (saved.flightDate) {
+    params.start = `${saved.flightDate}T00:00:00Z`;
+    const d = new Date(`${saved.flightDate}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    params.end = d.toISOString();
+  }
+  const attempts = [
+    () => aeroFetch(env, `/flights/${encodeURIComponent(ident)}`, params),
+    () => aeroFetch(env, `/flights/${encodeURIComponent(ident)}`),
+  ];
+  let lastError = null;
+  for (const run of attempts) {
+    try {
+      const data = await run();
+      const list = aeroMatchesList(data).filter((f) => routeMatchesSaved(f, saved) && dateMatchesSaved(f, saved));
+      if (list.length) return { list, raw: data };
+    } catch (e) { lastError = e; }
+  }
+  if (lastError?.status && ![400,404,422].includes(lastError.status)) throw lastError;
+  return { list: [], raw: null };
+}
+async function fetchPublishedSchedules(env, ident, saved) {
+  const attempts = [];
+  const departure = saved.origin || '';
+  const arrival = saved.destination || '';
+  if (saved.flightDate) {
+    attempts.push(() => aeroFetch(env, `/schedules/${encodeURIComponent(saved.flightDate)}/${encodeURIComponent(saved.flightDate)}`, { ident, origin: departure, destination: arrival }));
+    attempts.push(() => aeroFetch(env, `/schedules/${encodeURIComponent(saved.flightDate)}/${encodeURIComponent(saved.flightDate)}`, { origin: departure, destination: arrival }));
+  }
+  attempts.push(() => aeroFetch(env, `/flights/${encodeURIComponent(ident)}`));
+  let lastError = null;
+  for (const run of attempts) {
+    try {
+      const data = await run();
+      const list = aeroMatchesList(data).filter((f) => routeMatchesSaved(f, saved) && dateMatchesSaved(f, saved));
+      if (list.length) return { list, raw: data };
+    } catch (e) { lastError = e; }
+  }
+  if (lastError?.status && ![400,404,422].includes(lastError.status)) throw lastError;
+  return { list: [], raw: null };
+}
+function domainAllowed(urlText, domains) {
+  try {
+    const host = new URL(urlText).hostname.toLowerCase().replace(/^www\./, '');
+    return domains.some((d) => host === d || host.endsWith(`.${d}`));
+  } catch { return false; }
+}
+const OFFICIAL_WEB_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['found','flightNumber','flightDate','origin','destination','scheduledDeparture','scheduledArrival','status','terminal','gate','sourceTitle','sourceUrl','note','confidence'],
+  properties: {
+    found: { type:'boolean' }, flightNumber: { type:'string' }, flightDate: { type:'string' }, origin: { type:'string' }, destination: { type:'string' }, scheduledDeparture: { type:'string' }, scheduledArrival: { type:'string' }, status: { type:'string' }, terminal: { type:'string' }, gate: { type:'string' }, sourceTitle: { type:'string' }, sourceUrl: { type:'string' }, note: { type:'string' }, confidence: { type:'number', minimum:0, maximum:1 },
+  },
+};
+async function officialWebFlightFallback(env, saved) {
+  if (!env.OPENAI_API_KEY) return null;
+  const used = await getUsage(env, 'openai_web');
+  const limit = safeInt(env.OPENAI_WEB_MONTHLY_LIMIT, 100);
+  if (used >= limit) return { blocked: true, reason: `公式Web確認のアプリ内上限（${limit}回/月）に達しました。` };
+  const domains = String(env.FLIGHT_OFFICIAL_DOMAINS || 'jal.co.jp,ana.co.jp,flypeach.com,jetstar.com,cebupacificair.com,philippineairlines.com,narita-airport.jp,haneda-airport.jp,kansai-airports.co.jp').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const model = trim(env.OPENAI_WEB_MODEL || 'gpt-5-mini', 80) || 'gpt-5-mini';
+  const target = `${saved.airlineCode || ''}${saved.flightNumber || ''}`.trim();
+  const prompt = [
+    'Saved flight record:', JSON.stringify(saved),
+    'Search the public web for the official airline or official airport page for this exact flight/date/route.',
+    `Prefer sources whose hostname is one of or is a subdomain of: ${domains.join(', ')}.`,
+    'Do not use blogs, aggregators, travel agents, social media, snippets without a source URL, or generated summaries as facts.',
+    'Return found=false if you cannot verify the flight from an official page.',
+    'Do not infer a different flight number. If an official page suggests a different number on the same route/date, put it only in note and do not set found=true for the saved flight.',
+    `Search target: ${target} ${saved.flightDate || ''} ${saved.origin || ''} -> ${saved.destination || ''}`,
+  ].join('\n');
+  let response;
+  try {
+    response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        input: prompt,
+        tools: [{ type: 'web_search_preview' }],
+        text: { format: { type:'json_schema', name:'official_flight_check', strict:true, schema: OFFICIAL_WEB_SCHEMA } },
+        max_output_tokens: 1200,
+      }),
+    });
+  } catch (e) {
+    return { error: `公式Web確認へ接続できませんでした: ${e?.message || e}` };
+  }
+  const data = await response.json().catch(() => ({}));
+  await addUsage(env, 'openai_web', 1);
+  if (!response.ok) return { error: data?.error?.message || `OpenAI web search HTTP ${response.status}` };
