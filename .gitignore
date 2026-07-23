@@ -10,3 +10,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# Generated from source-parts by npm run build
+src/index.js
+public/app.js
