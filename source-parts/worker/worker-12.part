@@ -1,0 +1,95 @@
+function airportLabel(value) { return trim(airportValueParts(value).find(Boolean) || '', 80).toUpperCase(); }
+function faFlightNumber(flight) { return trim(flight?.ident_iata || flight?.ident_icao || flight?.ident || flight?.fa_flight_id || '', 30).toUpperCase(); }
+function hhmm(value) {
+  if (!value) return '';
+  const raw = String(value);
+  const direct = raw.match(/\b(\d{2}):(\d{2})\b/);
+  if (direct) return `${direct[1]}:${direct[2]}`;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+}
+function ymd(value) {
+  if (!value) return '';
+  const raw = String(value);
+  const direct = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (direct) return direct[1];
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function flightStatus(flight) {
+  return trim(flight?.status || flight?.flight_status || flight?.status_name || flight?.progress_percent || '', 80) || '確認済み';
+}
+function chooseAeroFlight(list, saved) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const targetDate = saved.flightDate;
+  const targetNumber = `${saved.airlineCode}${saved.flightNumber}`.replace(/\s+/g, '').toUpperCase();
+  const scored = list.map((f) => {
+    const number = faFlightNumber(f).replace(/\s+/g, '');
+    const depDate = ymd(f.scheduled_out || f.scheduled_off || f.scheduled_departure || f.scheduled_departure_time);
+    let score = 0;
+    if (number && targetNumber && number.includes(targetNumber)) score += 10;
+    if (targetDate && depDate === targetDate) score += 6;
+    if (saved.origin && airportCode(f.origin) === saved.origin.toUpperCase()) score += 3;
+    if (saved.destination && airportCode(f.destination) === saved.destination.toUpperCase()) score += 3;
+    return { f, score };
+  }).sort((a, b) => b.score - a.score);
+  return scored[0]?.f || null;
+}
+function normalizeFlightStatusText(value) {
+  return trim(value, 120).toUpperCase().replace(/[\s_\-]+/g, ' ');
+}
+function hasOperationalFlightEvidence(flight) {
+  if (!flight || typeof flight !== 'object') return false;
+  if (flight.actual_out || flight.actual_off || flight.actual_on || flight.actual_in || flight.actual_departure || flight.actual_arrival) return true;
+  if (flight.estimated_out || flight.estimated_off || flight.estimated_on || flight.estimated_in || flight.estimated_departure || flight.estimated_arrival) return true;
+  const status = normalizeFlightStatusText(flight.status || flight.flight_status || flight.status_name);
+  if (status && /(EN ROUTE|ENROUTE|DEPART|ARRIV|LANDED|AIRBORNE|TAXI|CANCEL|DIVERT|DELAY|GATE|BOARD)/.test(status)) return true;
+  const progress = Number(flight.progress_percent);
+  return Number.isFinite(progress) && progress > 0;
+}
+function changedTimesFromOperationalFlight(flight) {
+  const changedDeparture = hhmm(flight?.actual_out || flight?.actual_off || flight?.estimated_out || flight?.estimated_off || flight?.actual_departure || flight?.estimated_departure || '');
+  const changedArrival = hhmm(flight?.actual_in || flight?.actual_on || flight?.estimated_in || flight?.estimated_on || flight?.actual_arrival || flight?.estimated_arrival || '');
+  return { changedDeparture, changedArrival };
+}
+function scheduleTimesFromFlight(flight) {
+  return {
+    scheduledDeparture: hhmm(flight?.scheduled_out || flight?.scheduled_off || flight?.scheduled_departure || flight?.scheduled_departure_time || ''),
+    scheduledArrival: hhmm(flight?.scheduled_in || flight?.scheduled_on || flight?.scheduled_arrival || flight?.scheduled_arrival_time || ''),
+  };
+}
+function sourceUrlFromFlight(flight) {
+  const ident = faFlightNumber(flight);
+  const id = trim(flight?.fa_flight_id || '', 120);
+  if (id) return `https://www.flightaware.com/live/flight/id/${encodeURIComponent(id)}`;
+  if (ident) return `https://www.flightaware.com/live/flight/${encodeURIComponent(ident.replace(/\s+/g, ''))}`;
+  return 'https://www.flightaware.com/';
+}
+function nearMinutes(a, b, tolerance = 150) {
+  const toMin = (v) => {
+    const m = String(v || '').match(/^(\d{2}):(\d{2})$/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const x = toMin(a), y = toMin(b);
+  if (x === null || y === null) return false;
+  let diff = Math.abs(x - y);
+  diff = Math.min(diff, 1440 - diff);
+  return diff <= tolerance;
+}
+function possibleChangedFlight(saved, candidates) {
+  if (!Array.isArray(candidates) || !candidates.length || !saved.flightDate || !saved.origin || !saved.destination) return [];
+  const targetIdent = `${saved.airlineCode || ''}${saved.flightNumber || ''}`.replace(/\s+/g, '').toUpperCase();
+  return candidates.map((f) => ({
+    raw: f,
+    flightNumber: faFlightNumber(f),
+    flightDate: ymd(f.scheduled_out || f.scheduled_off || f.scheduled_departure || f.scheduled_departure_time),
+    origin: airportCode(f.origin),
+    destination: airportCode(f.destination),
+    scheduledDeparture: hhmm(f.scheduled_out || f.scheduled_off || f.scheduled_departure || f.scheduled_departure_time),
+    scheduledArrival: hhmm(f.scheduled_in || f.scheduled_on || f.scheduled_arrival || f.scheduled_arrival_time),
+  })).filter((c) => {
+    if (!c.flightNumber || c.flightNumber.replace(/\s+/g, '').toUpperCase() === targetIdent) return false;
+    if (c.flightDate !== saved.flightDate) return false;
+    if (c.origin !== saved.origin.toUpperCase() || c.destination !== saved.destination.toUpperCase()) return false;
