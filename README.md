@@ -70,13 +70,13 @@ source-parts/worker/      -> src/index.js
 source-parts/public-app/  -> public/app.js
 ```
 
-Run the build command to reconstruct the runtime files exactly:
+Run the build command to reconstruct the runtime files:
 
 ```bash
 npm run build
 ```
 
-`npm run dev` and `npm run deploy` run this build step automatically. The generated `src/index.js` and `public/app.js` files are intentionally excluded from Git.
+The build performs SHA-256 integrity checks against the sanitized application snapshot. `npm run dev` and `npm run deploy` run this build step automatically. The generated `src/index.js` and `public/app.js` files are intentionally excluded from Git.
 
 ## Setup
 
@@ -178,6 +178,10 @@ npm run deploy
 | `admin` | Full schedule editing and master-data management |
 | `manager` | Schedule editing |
 | `time_editor` | Departure-time changes only |
+
+## Validation
+
+GitHub Actions rebuilds both runtime files and runs JavaScript syntax checks on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.
 
 ## Portfolio note
 
