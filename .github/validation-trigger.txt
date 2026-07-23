@@ -1,1 +1,2 @@
 CI validation branch for the public portfolio snapshot.
+Trigger readable-source materialization.
