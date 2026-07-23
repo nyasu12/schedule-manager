@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#10223e">
+  <title>空港送迎管理</title>
+  <link rel="stylesheet" href="/styles.css?v=0.3.13">
+  <script src="/app.js?v=0.3.13" defer></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-icon">✈</span><div><strong>空港送迎管理</strong><small>v0.3.13 / Cloudflare</small></div></div>
+    <nav class="nav" aria-label="メインメニュー">
+      <button type="button" class="nav-btn active" data-mode="month">▣ 月間予定</button>
+      <button type="button" class="nav-btn" data-mode="arrival">→ 入国予定</button>
+      <button type="button" class="nav-btn" data-mode="departure">← 帰国予定</button>
+      <button type="button" class="nav-btn" data-mode="personstore">♙ 担当者・店舗別</button>
+      <button type="button" class="nav-btn" data-mode="incomplete">！ 未入力・未定</button>
+      <button type="button" class="nav-btn admin-only" data-open-settings hidden>⚙ 基本設定</button>
+    </nav>
+    <div class="side-foot">
+      <div id="sessionLabel">一般閲覧</div>
+      <small id="usageLabel">便確認 0 / 300回</small>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button type="button" class="icon-btn mobile-only" id="mobileMenuButton" aria-label="メニューを開く">☰</button>
+      <div class="title"><h1 id="pageTitle">月間予定</h1><p>空港送迎・出張・巡回予定をまとめて管理</p></div>
+      <div class="actions">
+        <button type="button" class="btn" id="loginButton">ログイン</button>
+        <button type="button" class="btn" id="logoutButton" hidden>ログアウト</button>
+        <button type="button" class="btn primary" id="addScheduleButton" hidden>＋ 新しい予定</button>
+      </div>
+    </header>
+
+    <div class="status-banner" id="statusBanner" role="status">画面を読み込んでいます…</div>
+
+    <section class="stats" aria-label="月間集計">
+      <div><span>入国予定</span><strong id="arrivalStat">0</strong><small>名</small></div>
+      <div><span>帰国予定</span><strong id="departureStat">0</strong><small>名</small></div>
+      <div><span>未入力・未定</span><strong id="incompleteStat">0</strong><small>件</small></div>
+    </section>
+
+    <section class="panel controls">
+      <div class="month-controls" id="monthControls">
+        <button type="button" class="btn small" id="prevMonth">‹ 前月</button>
+        <strong id="monthLabel">----</strong>
+        <button type="button" class="btn small" id="nextMonth">翌月 ›</button>
+        <button type="button" class="btn small" id="thisMonth">今月</button>
+      </div>
+      <div class="filters">
+        <label>地域<select id="regionFilter"><option value="">すべて</option></select></label>
+        <label>目的<select id="purposeFilter"><option value="">すべて</option></select></label>
+        <label class="named-filter" id="employeeFilterWrap" hidden>担当者<select id="employeeFilter"><option value="">すべて</option></select></label>
+        <label class="named-filter" id="storeFilterWrap" hidden>店舗<select id="storeFilter"><option value="">すべて</option></select></label>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <section class="panel calendar-panel" id="calendarPanel">
+        <div class="week"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>
+        <div class="days" id="calendarDays"></div>
+      </section>
+
+      <section class="panel list-panel" id="listPanel" hidden>
+        <div class="list-head"><div><h2 id="listTitle">予定一覧</h2><p id="listDescription">条件に合う予定を日付順に表示します。</p></div><strong id="listCount">0件</strong></div>
+        <div id="scheduleList"></div>
+      </section>
+
+      <aside class="panel detail-panel">
+        <div class="detail-head"><small>選択日</small><h2 id="detailDate">—</h2></div>
+        <div id="detailArea" class="empty">日付を選択してください。</div>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<div class="drawer-backdrop" id="drawerBackdrop" hidden>
+  <aside class="mobile-drawer" aria-label="モバイルメニュー">
+    <div class="drawer-head"><strong>空港送迎管理</strong><button type="button" class="icon-btn" id="closeDrawer">×</button></div>
+    <nav class="nav">
+      <button type="button" class="nav-btn active" data-mode="month">▣ 月間予定</button>
+      <button type="button" class="nav-btn" data-mode="arrival">→ 入国予定</button>
+      <button type="button" class="nav-btn" data-mode="departure">← 帰国予定</button>
+      <button type="button" class="nav-btn" data-mode="personstore">♙ 担当者・店舗別</button>
+      <button type="button" class="nav-btn" data-mode="incomplete">！ 未入力・未定</button>
+      <button type="button" class="nav-btn admin-only" data-open-settings hidden>⚙ 基本設定</button>
+    </nav>
+  </aside>
+</div>
+
+<div class="modal-backdrop" id="loginModal" hidden>
+  <section class="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <header class="modal-head"><h2 id="loginTitle">管理画面へログイン</h2><button type="button" class="icon-btn" data-close-modal="loginModal">×</button></header>
+    <form id="loginForm" class="modal-body">
+      <label class="field">ログインID<input id="loginUsername" autocomplete="username" required></label>
+      <label class="field">パスワード<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <div class="form-error" id="loginError" hidden></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close-modal="loginModal">キャンセル</button><button type="submit" class="btn primary" id="loginSubmit">ログイン</button></div>
+    </form>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="scheduleModal" hidden>
+  <section class="modal schedule-modal" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+    <header class="modal-head"><h2 id="scheduleModalTitle">新しい予定</h2><button type="button" class="icon-btn" data-close-modal="scheduleModal">×</button></header>
+    <form id="scheduleForm" class="modal-body">
+      <input type="hidden" id="scheduleId">
+      <section class="form-section">
+        <div class="section-title"><h3>基本情報</h3><span class="optional-pill">時間は後から入力可</span></div>
+        <div class="form-grid">
+          <label class="field">日付<input id="scheduleDate" type="date" required></label>
+          <label class="field" id="returnDateWrap">帰着日<input id="returnDate" type="date"></label>
+          <label class="field">地域<select id="scheduleRegion" required></select></label>
+          <label class="field">目的<select id="schedulePurpose" required></select></label>
+          <label class="field">出発時刻<input id="departureTime" type="time"><small>空欄の場合は「未入力・未定」扱い</small></label>
+          <label class="field other-field" id="otherContentWrap">その他内容<input id="otherContent" maxlength="1000"></label>
+          <label class="field full">その他交通・補足<input id="otherTransport" maxlength="500" placeholder="タクシー・レンタカー等"></label>
+          <label class="field full">メモ<textarea id="scheduleMemo" rows="3" maxlength="5000"></textarea></label>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <div class="section-title"><h3>会社・店舗内訳</h3><button type="button" class="btn small" id="addStoreRow">＋ 行を追加</button></div>
+        <p class="hint">会社・店舗がまだ決まっていない場合は、行を追加せず保存できます。</p>
+        <div class="dynamic-list" id="storeRows"></div>
+      </section>
+
+      <section class="form-section">
+        <div class="section-title"><h3>担当者・車両</h3><span class="optional-pill">任意</span></div>
+        <p class="hint">どちらも未選択で保存できます。あとから割り当てると「未入力・未定」から外れます。</p>
+        <div class="choice-columns">
+          <div>
+            <div class="choice-head"><strong>担当者</strong><button type="button" class="text-btn" data-clear-choices="employeeChoices">選択解除</button></div>
+            <select class="choice-picker" id="employeePicker"><option value="">担当者を選択してください</option></select>
+            <div class="selected-choice-list" id="employeeChoices"></div>
+          </div>
+          <div>
+            <div class="choice-head"><strong>車両</strong><button type="button" class="text-btn" data-clear-choices="carChoices">選択解除</button></div>
+            <select class="choice-picker" id="carPicker"><option value="">車両を選択してください</option></select>
+            <div class="selected-choice-list" id="carChoices"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section" id="flightSection">
+        <div class="section-title"><h3>航空便</h3><div><span class="optional-pill">後から入力可</span> <button type="button" class="btn small" id="addFlightRow">＋ 便を追加</button></div></div>
+        <p class="hint" id="flightHint">空港送迎で航空便が0件の場合は「未入力・未定」扱いになります。</p>
+        <div class="dynamic-list" id="flightRows"></div>
+      </section>
+
+      <section class="form-section">
+        <div class="section-title"><h3>顔写真・旅程表</h3><span class="optional-pill">任意</span></div>
+        <p class="hint">予定保存後にR2へアップロードします。旅程表は入国用・帰国用を分けて登録します。既存ファイルは予定を編集しても残ります。</p>
+        <div class="face-panel">
+          <div class="itinerary-head"><div><strong>顔写真</strong><small>必要な人数分だけ、1枚ずつ追加できます</small></div><button type="button" class="btn small" id="addFacePhoto">＋ 顔写真を追加</button></div>
+          <div class="face-upload-list" id="facePhotoRows"></div>
+        </div>
+
+        <div class="itinerary-panel arrival-panel">
+          <div class="itinerary-head"><div><strong>入国旅程表</strong><small>フィリピン → 日本など、入国の日程だけ反映</small></div><button type="button" class="btn small" id="addArrivalItinerary">＋ 旅程表を追加</button></div>
+          <div class="itinerary-upload-list" id="arrivalItineraryRows"></div>
+          <div class="auto-read-box compact"><div><p id="arrivalReadStatus">入国旅程表を選択してください。</p><small>往復が1枚に含まれていても「入国」の便だけ航空便欄へ反映します。</small></div><button type="button" class="btn primary" id="readArrivalItinerary">入国だけ読み取って反映</button></div>
+        </div>
+
+        <div class="itinerary-panel departure-panel">
+          <div class="itinerary-head"><div><strong>帰国旅程表</strong><small>日本 → フィリピンなど、帰国の日程だけ反映</small></div><button type="button" class="btn small" id="addDepartureItinerary">＋ 旅程表を追加</button></div>
+          <div class="itinerary-upload-list" id="departureItineraryRows"></div>
+          <div class="auto-read-box compact"><div><p id="departureReadStatus">帰国旅程表を選択してください。</p><small>往復が1枚に含まれていても「帰国」の便だけ航空便欄へ反映します。</small></div><button type="button" class="btn primary" id="readDepartureItinerary">帰国だけ読み取って反映</button></div>
+        </div>
+        <p class="hint">PDF・JPG・PNG・WebP・GIF対応。Google Vision → OpenAIで解析します。旅程表の方向と異なる便は採用しません。送迎の出発時刻は自動変更しません。</p>
+      </section>
+
+      <div class="form-error" id="scheduleError" hidden></div>
+      <div class="modal-actions split"><button type="button" class="btn danger" id="deleteScheduleButton" hidden>予定を削除</button><span></span><button type="button" class="btn" data-close-modal="scheduleModal">キャンセル</button><button type="submit" class="btn primary" id="saveScheduleButton">保存</button></div>
+    </form>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="departureTimeModal" hidden>
+  <section class="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="departureTimeTitle">
+    <header class="modal-head"><h2 id="departureTimeTitle">出発時間を変更</h2><button type="button" class="icon-btn" data-close-modal="departureTimeModal">×</button></header>
+    <form id="departureTimeForm" class="modal-body">
+      <input type="hidden" id="departureTimeScheduleId">
+      <label class="field">出発時間<input id="quickDepartureTime" type="time"><small>空欄にすると「未入力・未定」に戻ります。</small></label>
+      <div class="form-error" id="departureTimeError" hidden></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close-modal="departureTimeModal">キャンセル</button><button type="submit" class="btn primary" id="departureTimeSaveButton">出発時間を保存</button></div>
+    </form>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <section class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header class="modal-head"><h2 id="settingsTitle">基本設定</h2><button type="button" class="icon-btn" data-close-modal="settingsModal">×</button></header>
+    <div class="modal-body settings-layout">
+      <nav class="settings-nav">
+        <button type="button" class="active" data-master-type="company">会社</button>
+        <button type="button" data-master-type="store">店舗</button>
+        <button type="button" data-master-type="employee">担当者</button>
+        <button type="button" data-master-type="car">車両</button>
+      </nav>
+      <div>
+        <form id="masterForm" class="settings-editor">
+          <input type="hidden" id="masterId">
+          <div id="masterFields"></div>
+          <div class="modal-actions"><button type="button" class="btn" id="masterReset">新規入力</button><button type="submit" class="btn primary">保存</button></div>
+        </form>
+        <div class="settings-list" id="masterList"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<noscript><div class="noscript">この画面はJavaScriptが必要です。ブラウザ設定でJavaScriptを有効にしてください。</div></noscript>
+</body>
+</html>
