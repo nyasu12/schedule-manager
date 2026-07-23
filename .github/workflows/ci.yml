@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-check:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,11 +23,19 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Rebuild runtime sources
-        run: npm run build
+      - name: Rebuild and check JavaScript
+        run: npm run check
 
-      - name: Check Worker syntax
-        run: node --check src/index.js
+      - name: Validate migrations on a fresh database
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+          from pathlib import Path
 
-      - name: Check browser app syntax
-        run: node --check public/app.js
+          con = sqlite3.connect(':memory:')
+          for path in sorted(Path('migrations').glob('*.sql')):
+              con.executescript(path.read_text())
+              print('applied', path.name)
+          print('all migrations applied successfully')
+          PY
