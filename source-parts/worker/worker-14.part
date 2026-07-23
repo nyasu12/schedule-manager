@@ -1,0 +1,76 @@
+  const outputText = data?.output_text || data?.output?.flatMap?.((x) => x.content || []).map?.((x) => x.text || x.output_text || '').filter(Boolean).join('\n') || '';
+  let parsed = null;
+  try { parsed = JSON.parse(outputText); } catch {}
+  if (!parsed?.found || !parsed.sourceUrl || !domainAllowed(parsed.sourceUrl, domains)) return { found:false, note: trim(parsed?.note || '公式ページから便情報を確認できませんでした。', 500), used: used + 1, limit };
+  const normalizedNumber = trim(parsed.flightNumber, 30).replace(/\s+/g,'').toUpperCase();
+  if (normalizedNumber && target && !normalizedNumber.includes(target.replace(/\s+/g,'').toUpperCase()) && !target.replace(/\s+/g,'').toUpperCase().includes(normalizedNumber)) return { found:false, note:`公式情報は別便 ${normalizedNumber} の可能性があります。保存便は変更していません。`, used:used+1, limit };
+  return { found:true, ...parsed, sourceUrl:trim(parsed.sourceUrl,1000), sourceTitle:trim(parsed.sourceTitle,120), note:trim(parsed.note,500), used:used+1, limit };
+}
+async function checkFlight(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  const flight = await env.DB.prepare('SELECT * FROM app_flights_v2 WHERE id=?').bind(id).first();
+  if (!flight) return fail('航空便が見つかりません。', 404);
+  const saved = {
+    airlineCode: trim(flight.airline_code,10).toUpperCase(), flightNumber: trim(flight.flight_number,30).toUpperCase(), flightDate: trim(flight.flight_date,10), origin: trim(flight.origin,80).toUpperCase(), destination: trim(flight.destination,80).toUpperCase(), scheduledDeparture: trim(flight.scheduled_departure,5), scheduledArrival: trim(flight.scheduled_arrival,5),
+  };
+  const ident = `${saved.airlineCode}${saved.flightNumber}`.replace(/\s+/g,'');
+  if (!ident || !saved.flightDate) return fail('便確認には航空会社コード・便番号・搭乗日が必要です。');
+  let exact = { list: [] }, scheduled = { list: [] }, aeroError = '';
+  if (env.FLIGHTAWARE_API_KEY) {
+    try { exact = await fetchExactOperationalFlights(env, ident, saved); } catch (e) { aeroError = e?.message || String(e); }
+    if (!exact.list.length) {
+      try { scheduled = await fetchPublishedSchedules(env, ident, saved); } catch (e) { if (!aeroError) aeroError = e?.message || String(e); }
+    }
+  }
+  const exactChoice = chooseAeroFlight(exact.list, saved);
+  if (exactChoice && hasOperationalFlightEvidence(exactChoice)) {
+    const times = changedTimesFromOperationalFlight(exactChoice);
+    const sched = scheduleTimesFromFlight(exactChoice);
+    await env.DB.prepare(`UPDATE app_flights_v2 SET changed_departure=?,changed_arrival=?,terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=? WHERE id=?`)
+      .bind(times.changedDeparture, times.changedArrival, trim(exactChoice?.terminal || exactChoice?.origin?.terminal || '',80), trim(exactChoice?.gate_origin || exactChoice?.gate || '',80), flightStatus(exactChoice), 'FlightAware AeroAPI (operational)', sourceUrlFromFlight(exactChoice), `実運航情報を確認。登録時刻 ${saved.scheduledDeparture || sched.scheduledDeparture || '--:--'}→${saved.scheduledArrival || sched.scheduledArrival || '--:--'}`, id).run();
+    return json({ ok:true, source:'FlightAware AeroAPI', matchType:'operational', flight:{ changedDeparture:times.changedDeparture, changedArrival:times.changedArrival, status:flightStatus(exactChoice), sourceUrl:sourceUrlFromFlight(exactChoice) } });
+  }
+  const publishedList = scheduled.list.length ? scheduled.list : exact.list;
+  const scheduleChoice = chooseAeroFlight(publishedList, saved);
+  if (scheduleChoice) {
+    const sched = scheduleTimesFromFlight(scheduleChoice);
+    await env.DB.prepare(`UPDATE app_flights_v2 SET terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=? WHERE id=?`)
+      .bind(trim(scheduleChoice?.terminal || scheduleChoice?.origin?.terminal || '',80), trim(scheduleChoice?.gate_origin || scheduleChoice?.gate || '',80), '公開スケジュール確認', 'FlightAware AeroAPI (published schedule)', sourceUrlFromFlight(scheduleChoice), `公開スケジュールを確認。実運航情報はまだ未取得。公開時刻 ${sched.scheduledDeparture || '--:--'}→${sched.scheduledArrival || '--:--'}`, id).run();
+    return json({ ok:true, source:'FlightAware AeroAPI', matchType:'schedule', requiresReview:false, flight:{ scheduledDeparture:sched.scheduledDeparture, scheduledArrival:sched.scheduledArrival, status:'公開スケジュール確認', sourceUrl:sourceUrlFromFlight(scheduleChoice) } });
+  }
+  let sameRoute = [];
+  if (env.FLIGHTAWARE_API_KEY) {
+    try {
+      const routeData = await fetchPublishedSchedules(env, '', saved);
+      sameRoute = possibleChangedFlight(saved, routeData.list);
+    } catch {}
+  }
+  if (sameRoute.length) {
+    const note = `保存便 ${ident} は確認できませんでした。同日・同一路線に ${sameRoute.map((c)=>`${c.flightNumber} ${c.scheduledDeparture || '--:--'}→${c.scheduledArrival || '--:--'}`).join(' / ')} があります。便変更の可能性あり。`;
+    await env.DB.prepare(`UPDATE app_flights_v2 SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=? WHERE id=?`)
+      .bind('便変更の可能性あり', 'FlightAware AeroAPI (route comparison)', 'https://www.flightaware.com/', note, id).run();
+    return json({ ok:true, source:'FlightAware AeroAPI', matchType:'possible_change', requiresReview:true, candidates:sameRoute.map((c)=>({ flightNumber:c.flightNumber,scheduledDeparture:c.scheduledDeparture,scheduledArrival:c.scheduledArrival,origin:c.origin,destination:c.destination })), note });
+  }
+  const web = await officialWebFlightFallback(env, saved);
+  if (web?.found) {
+    await env.DB.prepare(`UPDATE app_flights_v2 SET terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=? WHERE id=?`)
+      .bind(trim(web.terminal,80), trim(web.gate,80), trim(web.status,80) || '公式Web確認', `Official web: ${trim(web.sourceTitle,100)}`, trim(web.sourceUrl,1000), `公式ページ候補で確認。${trim(web.note,500)}`, id).run();
+    return json({ ok:true, source:'official_web', matchType:'official_web', requiresReview:true, flight:{ scheduledDeparture:normalizeTime(web.scheduledDeparture), scheduledArrival:normalizeTime(web.scheduledArrival), status:trim(web.status,80), sourceUrl:web.sourceUrl, sourceTitle:web.sourceTitle }, note:web.note, usage:{ used:web.used, limit:web.limit } });
+  }
+  const note = web?.reason || web?.error || web?.note || aeroError || 'AeroAPI・公式Web候補のどちらからも対象便を確認できませんでした。';
+  await env.DB.prepare(`UPDATE app_flights_v2 SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=? WHERE id=?`)
+    .bind('要確認', env.FLIGHTAWARE_API_KEY ? 'AeroAPI / official web fallback' : 'Official web fallback', '', trim(note,1000), id).run();
+  return fail(`便を確認できませんでした。${note}`, 404);
+}
+
+async function pageResponse(env, path) {
+  const key = path === '/' ? 'index.html' : path.replace(/^\//, '');
+  const asset = await env.ASSETS.fetch(new Request(`https://asset.local/${key}`));
+  return asset;
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
