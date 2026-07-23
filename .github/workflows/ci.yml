@@ -31,3 +31,120 @@ jobs:
 
       - name: Check browser app syntax
         run: node --check public/app.js
+
+  materialize-readable-source:
+    if: github.event_name == 'pull_request' && github.event.action == 'reopened'
+    needs: build-and-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Rebuild exact sanitized sources
+        run: node scripts/build.mjs
+
+      - name: Convert repository to normal source layout
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package_path = Path('package.json')
+          package = json.loads(package_path.read_text())
+          package['scripts']['dev'] = 'wrangler dev'
+          package['scripts']['deploy'] = 'wrangler deploy'
+          package['scripts'].pop('build', None)
+          package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n')
+
+          gitignore = Path('.gitignore')
+          lines = gitignore.read_text().splitlines()
+          remove = {
+              '# Generated from source-parts by npm run build',
+              'src/index.js',
+              'public/app.js',
+          }
+          gitignore.write_text('\n'.join(line for line in lines if line not in remove) + '\n')
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          start = text.index('## Source layout')
+          end = text.index('## Setup', start)
+          replacement = '''## Source layout
+
+The main application sources are committed directly for easy portfolio review:
+
+```text
+src/index.js          Cloudflare Worker / API
+public/app.js         Browser application
+public/index.html     Main UI markup
+public/styles.css     UI styles
+migrations/           D1 schema and migrations
+scripts/              User-management utilities
+```
+
+'''
+          text = text[:start] + replacement + text[end:]
+          text = text.replace(
+              'GitHub Actions rebuilds both runtime files and runs JavaScript syntax checks on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.',
+              'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot was also validated against the SHA-256 hashes of the sanitized source before the source files were materialized.'
+          )
+          text = text.replace(
+              'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.',
+              'GitHub Actions runs JavaScript syntax checks for both the Cloudflare Worker and browser application on every pull request. The public snapshot was also validated against the SHA-256 hashes of the sanitized source before the source files were materialized.'
+          )
+          readme.write_text(text)
+          PY
+
+          cat > .github/workflows/ci.yml <<'YAML'
+          name: CI
+
+          on:
+            push:
+              branches: [main]
+            pull_request:
+
+          permissions:
+            contents: read
+
+          jobs:
+            syntax-check:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v4
+
+                - name: Setup Node.js
+                  uses: actions/setup-node@v4
+                  with:
+                    node-version: '22'
+
+                - name: Check Worker syntax
+                  run: node --check src/index.js
+
+                - name: Check browser app syntax
+                  run: node --check public/app.js
+          YAML
+
+          rm -rf source-parts
+          rm -f scripts/build.mjs
+          rm -f .github/workflows/materialize-source.yml
+
+      - name: Commit normal source layout
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git add -f src/index.js public/app.js
+          git commit -m 'Materialize portfolio source files'
+          git push origin HEAD:main
