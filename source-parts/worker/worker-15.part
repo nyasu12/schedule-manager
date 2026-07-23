@@ -1,0 +1,33 @@
+    try {
+      if (path === '/api/login' && request.method === 'POST') return await login(request, env);
+      if (path === '/api/logout' && request.method === 'POST') return logout();
+      if (path === '/api/bootstrap' && request.method === 'GET') return await bootstrap(request, env);
+      if (path === '/api/schedules' && request.method === 'POST') return await saveSchedule(request, env);
+      const depTimeMatch = path.match(/^\/api\/schedules\/([^/]+)\/departure-time$/);
+      if (depTimeMatch && request.method === 'POST') return await updateDepartureTime(request, env, decodeURIComponent(depTimeMatch[1]));
+      const scheduleMatch = path.match(/^\/api\/schedules\/([^/]+)$/);
+      if (scheduleMatch && request.method === 'DELETE') return await deleteSchedule(request, env, decodeURIComponent(scheduleMatch[1]));
+      const uploadMatch = path.match(/^\/api\/schedules\/([^/]+)\/files$/);
+      if (uploadMatch && request.method === 'POST') return await uploadFile(request, env, decodeURIComponent(uploadMatch[1]), url);
+      const fileApiMatch = path.match(/^\/api\/files\/([^/]+)$/);
+      if (fileApiMatch && request.method === 'DELETE') return await deleteFile(request, env, decodeURIComponent(fileApiMatch[1]));
+      const fileMatch = path.match(/^\/files\/([^/]+)$/);
+      if (fileMatch && request.method === 'GET') return await serveFile(env, decodeURIComponent(fileMatch[1]));
+      if (path === '/api/ocr/preview' && request.method === 'POST') return await previewTravelDocument(request, env);
+      const ocrMatch = path.match(/^\/api\/files\/([^/]+)\/ocr$/);
+      if (ocrMatch && request.method === 'POST') return await runVision(request, env, decodeURIComponent(ocrMatch[1]));
+      const flightMatch = path.match(/^\/api\/flights\/([^/]+)\/check$/);
+      if (flightMatch && request.method === 'POST') return await checkFlight(request, env, decodeURIComponent(flightMatch[1]));
+      const masterMatch = path.match(/^\/api\/master\/(region|purpose|company|store|employee|car)$/);
+      if (masterMatch && request.method === 'POST') return await saveMaster(request, env, masterMatch[1]);
+      const masterDelete = path.match(/^\/api\/master\/(region|purpose|company|store|employee|car)\/([^/]+)$/);
+      if (masterDelete && request.method === 'DELETE') return await deactivateMaster(request, env, masterDelete[1], decodeURIComponent(masterDelete[2]));
+      if (path.startsWith('/api/')) return fail('APIが見つかりません。', 404);
+      return await pageResponse(env, path);
+    } catch (e) {
+      console.error('Unhandled error', e);
+      return fail('サーバーエラーが発生しました。', 500, e?.message || String(e));
+    }
+  },
+};
+
