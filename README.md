@@ -1,24 +1,53 @@
 # Schedule Manager
 
-Airport transportation schedule management web application built with Cloudflare Workers.
+Configurable schedule and resource management web application built with Cloudflare Workers.
 
-This repository is a **public portfolio version** of the application. Production credentials, Cloudflare resource IDs, real company data, employee names, vehicle data, uploaded files, and schedule records are intentionally excluded.
+This repository is a **public portfolio version** of the application. It is designed as a general-purpose scheduling platform that can be adapted to different operational workflows. Airport transportation is included as one domain-specific **Travel module**, not as the core assumption of the system.
+
+Production credentials, Cloudflare resource IDs, real organization data, staff names, resource data, uploaded files, and schedule records are intentionally excluded.
 
 ## Features
 
+### Core scheduling
+
 - Monthly calendar and filtered schedule views
-- Arrival / departure schedule management
-- Company, store, employee, and vehicle master management
-- Role-based access: admin, manager, and departure-time editor
-- Multiple arrival / departure itinerary attachments
-- Multiple face-photo attachments
+- Configurable schedule types
+- Workflow statuses: draft, planned, confirmed, in progress, done, and cancelled
+- Area / region filtering
+- Organization and location assignment
+- Assignee and resource allocation
+- Incomplete / unassigned schedule detection
+- Generic file attachments
+- Role-based access: admin, manager, and time editor
+
+### Configurable workflow
+
+Schedule types can represent workflows such as:
+
+- Meetings
+- Business trips
+- Customer visits
+- Field work
+- Events
+- Transportation
+- Airport transfers
+- Other custom operational schedules
+
+Each schedule type can control which capabilities are required or displayed, including time, assignees, resources, organization/location data, and the Travel module.
+
+### Optional Travel module
+
+Travel-enabled schedule types can additionally use:
+
+- Arrival / departure itinerary management
+- Multiple itinerary and face-photo attachments
 - OCR-assisted itinerary parsing with Google Cloud Vision and OpenAI
 - Flight verification with FlightAware AeroAPI
 - Official-web fallback search through the OpenAI Responses API
 - Possible flight-number-change detection without silently overwriting the saved flight number
-- Cloudflare R2 file storage
-- Cloudflare D1 schedule and master-data storage
 - Japan Standard Time display for the latest flight-check timestamp
+
+The Travel functionality is intentionally isolated from the core scheduling model so non-travel schedules do not need flight or itinerary fields.
 
 ## Tech stack
 
@@ -30,7 +59,7 @@ This repository is a **public portfolio version** of the application. Production
 | File storage | Cloudflare R2 |
 | OCR | Google Cloud Vision API |
 | AI parsing / web fallback | OpenAI API |
-| Flight information | FlightAware AeroAPI |
+| Optional flight information | FlightAware AeroAPI |
 | Deployment | Wrangler |
 
 ## Architecture
@@ -40,12 +69,18 @@ Browser
   |
   v
 Cloudflare Worker
-  |-- D1: schedules, users, masters, usage counters
-  |-- R2: photos and itinerary files
-  |-- Google Vision: OCR
-  |-- OpenAI: itinerary parsing / official-web fallback
-  `-- FlightAware AeroAPI: schedule and operational checks
+  |-- D1: schedules, users, configuration, resources, usage counters
+  |-- R2: generic attachments and Travel documents
+  |-- Google Vision: optional OCR
+  |-- OpenAI: optional document parsing / official-web fallback
+  `-- FlightAware AeroAPI: optional Travel flight checks
 ```
+
+## Design approach
+
+The application originally grew from a real airport-transportation workflow. Version 0.4 generalizes that implementation into a reusable scheduling platform while keeping the original Travel capabilities as an optional module.
+
+The compatibility-oriented design keeps the existing operational data model usable while moving user-facing concepts toward configurable schedule types, organizations, locations, assignees, and resources.
 
 ## Public repository safety
 
@@ -54,16 +89,16 @@ The public version does **not** contain:
 - API keys or authentication secrets
 - Production Cloudflare resource IDs
 - Default passwords
-- Real company / store / employee / vehicle master data
+- Real organization / location / assignee / resource master data
 - Production schedules
-- Uploaded photos or itinerary documents
+- Uploaded photos or documents
 - Production Worker URLs
 
 `wrangler.jsonc`, `.dev.vars`, and other local secret files are ignored by Git.
 
 ## Source layout
 
-The two large runtime files are stored as ordered source fragments under `source-parts/` so this portfolio snapshot can be published and reviewed safely through the repository tooling used to create it.
+The current public snapshot uses ordered source fragments for the two large runtime files:
 
 ```text
 source-parts/worker/      -> src/index.js
@@ -76,7 +111,7 @@ Run the build command to reconstruct the runtime files:
 npm run build
 ```
 
-The build performs SHA-256 integrity checks against the sanitized application snapshot. `npm run dev` and `npm run deploy` run this build step automatically. The generated `src/index.js` and `public/app.js` files are intentionally excluded from Git.
+`npm run dev` and `npm run deploy` run the build automatically.
 
 ## Setup
 
@@ -175,18 +210,16 @@ npm run deploy
 
 | Role | Permission |
 | --- | --- |
-| `admin` | Full schedule editing and master-data management |
-| `manager` | Schedule editing |
-| `time_editor` | Departure-time changes only |
-
-## Validation
-
-GitHub Actions rebuilds both runtime files and runs JavaScript syntax checks on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.
+| `admin` | Full schedule, configuration, and master-data management |
+| `manager` | Schedule management |
+| `time_editor` | Time changes only |
 
 ## Portfolio note
 
-This repository demonstrates the architecture and implementation of the application while keeping operational data private. External integrations are optional; their related features remain unavailable until the corresponding API key is configured.
+This project demonstrates how a domain-specific internal workflow can be evolved into a configurable platform without throwing away the specialized capabilities that made the original system useful.
+
+The core application can be used for general scheduling and resource coordination, while integrations such as OCR, OpenAI-assisted parsing, and FlightAware are optional modules enabled only when a workflow needs them.
 
 ## Version
 
-Public portfolio snapshot based on application version **0.3.13**.
+Generalized platform work: **0.4.0**.
