@@ -75,7 +75,13 @@ async function api(url, options = {}) {
   return payload;
 }
 
-function purposeName(id) { return state.data.purposes.find((x) => x.id === id)?.name || id || '予定'; }
+function purposeById(id) { return state.data.purposes.find((x) => x.id === id); }
+function purposeName(id) { return purposeById(id)?.name || id || '予定'; }
+function activePurposes() { return state.data.purposes.filter((x) => x.active !== false); }
+function isTravelPurpose(id) { return !!purposeById(id)?.enableTravel; }
+const workflowStatusLabels = { draft: '下書き', planned: '未確定', confirmed: '確定', in_progress: '進行中', done: '完了', cancelled: 'キャンセル' };
+function workflowStatusLabel(value) { return workflowStatusLabels[value] || '未確定'; }
+function workflowStatusClass(value) { return `status-${String(value || 'planned').replace(/[^a-z_]/g, '')}`; }
 function regionName(id) { return state.data.regions.find((x) => x.id === id)?.name || id || ''; }
 function companyById(id) { return state.data.companies.find((x) => x.id === id); }
 function storeById(id) { return state.data.stores.find((x) => x.id === id); }
@@ -90,29 +96,30 @@ function colorStrip(colors) {
 }
 function scheduleMissingReasons(schedule) {
   const reasons = [];
-  if (!schedule.departureTime) reasons.push('出発時刻');
-  if (!schedule.employees?.length) reasons.push('担当者');
-  if (!schedule.cars?.length) reasons.push('車両');
-  if (schedule.purposeId === 'APT' && !schedule.flights?.length) reasons.push('航空便');
+  const purpose = purposeById(schedule.purposeId) || {};
+  if (purpose.requireTime && !schedule.departureTime) reasons.push('開始時刻');
+  if (purpose.requireAssignee && !schedule.employees?.length) reasons.push('担当者');
+  if (purpose.requireResource && !schedule.cars?.length) reasons.push('リソース');
+  if (purpose.requireFlight && !schedule.flights?.length) reasons.push('航空便');
   return reasons;
 }
 function isIncomplete(schedule) { return scheduleMissingReasons(schedule).length > 0; }
 function arrivalTotal(schedule) { return (schedule.stores || []).reduce((n, x) => n + Number(x.arrivalCount || 0), 0); }
 function departureTotal(schedule) { return (schedule.stores || []).reduce((n, x) => n + Number(x.departureCount || 0), 0); }
 function storeSummary(schedule) {
-  if (!schedule.stores?.length) return '会社・店舗 未入力';
+  if (!schedule.stores?.length) return '組織・拠点 未入力';
   return schedule.stores.map((r) => {
-    const company = companyById(r.companyId)?.name || '会社未設定';
-    const store = storeById(r.storeId)?.name || '店舗未設定';
+    const company = companyById(r.companyId)?.name || '組織未設定';
+    const store = storeById(r.storeId)?.name || '拠点未設定';
     return `${company}／${store}`;
   }).join('、');
 }
 function employeeSummary(schedule) {
-  if (!schedule.employees?.length) return '未入力・未定';
+  if (!schedule.employees?.length) return '未割当';
   return schedule.employees.map((id) => employeeById(id)?.name || id).join('、');
 }
 function carSummary(schedule) {
-  if (!schedule.cars?.length) return '未入力・未定';
+  if (!schedule.cars?.length) return '未割当';
   return schedule.cars.map((id) => carById(id)?.name || id).join('、');
 }
 function flightSummary(f) {
@@ -140,9 +147,8 @@ function filteredBase() {
 }
 function modeSchedules() {
   let rows = filteredBase();
-  if (state.mode === 'arrival') rows = rows.filter((s) => arrivalTotal(s) > 0);
-  if (state.mode === 'departure') rows = rows.filter((s) => departureTotal(s) > 0);
-  if (state.mode === 'incomplete') rows = rows.filter(isIncomplete);
+  if (state.mode === 'travel') rows = rows.filter((s) => isTravelPurpose(s.purposeId));
+  if (state.mode === 'incomplete') rows = rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned'));
   if (state.mode === 'personstore') {
     const employee = $('employeeFilter')?.value || '';
     const store = $('storeFilter')?.value || '';
@@ -158,17 +164,21 @@ function renderSession() {
   $('logoutButton').hidden = !user;
   $('addScheduleButton').hidden = !isEditor();
   qsa('.admin-only').forEach((el) => { el.hidden = !isAdmin(); });
-  $('sessionLabel').textContent = user ? `${user.username} / ${user.role === 'admin' ? '完全編集' : user.role === 'manager' ? '予定管理' : user.role === 'time_editor' ? '出発時間のみ' : user.role}` : '一般閲覧';
+  const hasTravel = state.data.purposes.some((x) => x.active !== false && x.enableTravel);
+  qsa('.travel-nav').forEach((el) => { el.hidden = !hasTravel; });
+  if (!hasTravel && state.mode === 'travel') state.mode = 'month';
+  $('sessionLabel').textContent = user ? `${user.username} / ${user.role === 'admin' ? '完全編集' : user.role === 'manager' ? '予定管理' : user.role === 'time_editor' ? '開始時間のみ' : user.role}` : '一般閲覧';
   const u = state.data.usage || {};
-  $('usageLabel').textContent = `OCR ${u.vision || 0}/${u.visionLimit || 900}・AI解析 ${u.openai || 0}/${u.openaiLimit || 300}・Web確認 ${u.openaiWeb || 0}/${u.openaiWebLimit || 100}・AeroAPI ${u.flight || 0}/${u.flightLimit || 300}`;
+  $('usageLabel').hidden = !hasTravel;
+  $('usageLabel').textContent = hasTravel ? `Travel拡張：OCR ${u.vision || 0}/${u.visionLimit || 900}・AI ${u.openai || 0}/${u.openaiLimit || 300}・Web ${u.openaiWeb || 0}/${u.openaiWebLimit || 100}・Flight API ${u.flight || 0}/${u.flightLimit || 300}` : '';
 }
 function renderFilters() {
   const regionValue = $('regionFilter').value;
   const purposeValue = $('purposeFilter').value;
   const employeeValue = $('employeeFilter').value;
   const storeValue = $('storeFilter').value;
-  $('regionFilter').innerHTML = `<option value="">すべて</option>${state.data.regions.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  $('purposeFilter').innerHTML = `<option value="">すべて</option>${state.data.purposes.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  $('regionFilter').innerHTML = `<option value="">すべて</option>${state.data.regions.filter((x) => x.active !== false).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  $('purposeFilter').innerHTML = `<option value="">すべて</option>${activePurposes().map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
   $('employeeFilter').innerHTML = `<option value="">すべて</option>${state.data.employees.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
   $('storeFilter').innerHTML = `<option value="">すべて</option>${state.data.stores.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
   if ([...$('regionFilter').options].some((o) => o.value === regionValue)) $('regionFilter').value = regionValue;
@@ -181,20 +191,4 @@ function renderFilters() {
 }
 function renderStats() {
   const rows = currentMonthSchedules();
-  $('arrivalStat').textContent = String(rows.reduce((n, s) => n + arrivalTotal(s), 0));
-  $('departureStat').textContent = String(rows.reduce((n, s) => n + departureTotal(s), 0));
-  $('incompleteStat').textContent = String(rows.filter(isIncomplete).length);
-}
-
-function dateInRange(date, start, end) { return date >= start && date <= end; }
-function renderCalendar() {
-  const y = state.viewMonth.getFullYear();
-  const m = state.viewMonth.getMonth();
-  $('monthLabel').textContent = `${y}年${m + 1}月`;
-  const first = new Date(y, m, 1);
-  const start = new Date(y, m, 1 - first.getDay());
-  const rows = filteredBase();
-  const holidayMap = new Map(state.data.holidays.map((x) => [x.date, x.name]));
-  const today = localDateString(new Date());
-  const html = [];
-  for (let i = 0; i < 42; i += 1) {
+  $('totalStat').textContent = String(rows.length);
