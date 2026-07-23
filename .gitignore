@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+wrangler.jsonc
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
