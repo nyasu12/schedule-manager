@@ -4,15 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/index.js && node --check public/app.js",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
-    "user:set": "node scripts/set-user.mjs",
-    "build": "node scripts/build.mjs"
+    "user:set": "node scripts/set-user.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.113.0"
   },
-  "description": "Configurable schedule and resource management web application built with Cloudflare Workers, D1, and R2, with optional Travel integrations."
+  "description": "Configurable schedule and resource management web app with optional Travel/OCR integrations, built on Cloudflare Workers, D1, and R2."
 }
