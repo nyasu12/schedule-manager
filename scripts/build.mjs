@@ -3,26 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const expected = new Map([
-  ['src/index.js', 'bc19399cfba91a36cedf857393b2ea70f85eaaf7a71bf568f4fcb705b1995235'],
-  ['public/app.js', '5a881ffe03d7b3de89053ea652b2cd39a13c74dfd6f690fa1f35cbf954fa7c2f'],
-]);
-
-// A few fragments carry a tiny overlap at their transport boundary. Trim only
-// those boundary bytes before reconstruction; the final SHA-256 checks below
-// guarantee that the rebuilt files exactly match the sanitized source snapshot.
-const publishedTailTrim = new Map([
-  ['source-parts/public-app/app-01.part', 5],
-  ['source-parts/public-app/app-02.part', 1],
-  ['source-parts/public-app/app-03.part', 1],
-  ['source-parts/worker/worker-03.part', 1],
-  ['source-parts/worker/worker-05.part', 1],
+  ['src/index.js', 'e141365241d76ced1031ea24693e3dbf39c2cd40c15b8fe1a975f4093ad3851f'],
+  ['public/app.js', '80dfe63ff515e2382474e7bc71e5503d06f70dea5551013567b52c0f236d4c49'],
 ]);
 
 function readPart(partsDirectory, name) {
-  const relative = `${partsDirectory}/${name}`;
-  const source = fs.readFileSync(path.join(partsDirectory, name), 'utf8');
-  const trimCount = publishedTailTrim.get(relative) || 0;
-  return trimCount ? source.slice(0, -trimCount) : source;
+  return fs.readFileSync(path.join(partsDirectory, name), 'utf8');
 }
 
 function rebuild(partsDirectory, outputFile) {
