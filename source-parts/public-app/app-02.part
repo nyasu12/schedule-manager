@@ -1,0 +1,175 @@
+1) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const ds = localDateString(d);
+    const dayRows = rows.filter((x) => x.date === ds);
+    const trips = rows.filter((x) => x.purposeId === 'BUS' && x.returnDate && dateInRange(ds, x.date, x.returnDate)).slice(0, 3);
+    const classes = ['day'];
+    if (d.getMonth() !== m) classes.push('other');
+    if (d.getDay() === 0) classes.push('sun');
+    if (d.getDay() === 6) classes.push('sat');
+    if (holidayMap.has(ds)) classes.push('holiday');
+    if (today === ds) classes.push('today');
+    if (state.selectedDate === ds) classes.push('selected');
+    if (trips.length) classes.push('has-trip');
+    const countBlocks = ['APT', 'PAT', 'OTH'].map((purposeId) => {
+      const group = dayRows.filter((x) => x.purposeId === purposeId);
+      if (!group.length) return '';
+      const colors = [...new Set(group.flatMap(scheduleColors))];
+      return `<div class="day-count"><div class="count-line"><span>${escapeHtml(purposeName(purposeId))}</span><strong>${group.length}件</strong></div>${colorStrip(colors)}</div>`;
+    }).join('');
+    const incompleteCount = dayRows.filter(isIncomplete).length;
+    const tripLines = trips.map((t) => `<div class="trip-line">${scheduleColors(t).map((c) => `<i style="background:${escapeHtml(c)}"></i>`).join('')}</div>`).join('');
+    const tripLabel = trips.some((t) => t.date === ds) ? `<div class="trip-label">出張 ${trips.filter((t) => t.date === ds).length}件</div>` : '';
+    html.push(`<div class="${classes.join(' ')}" data-date="${ds}"><div class="daynum">${d.getDate()}</div>${holidayMap.has(ds) ? `<span class="holiday-name">${escapeHtml(holidayMap.get(ds))}</span>` : ''}<div class="day-counts">${countBlocks}${incompleteCount ? `<div class="incomplete-day">未入力・未定 ${incompleteCount}件</div>` : ''}</div>${trips.length ? `${tripLabel}<div class="trip-lines">${tripLines}</div>` : ''}</div>`);
+  }
+  $('calendarDays').innerHTML = html.join('');
+  qsa('.day', $('calendarDays')).forEach((el) => el.addEventListener('click', () => {
+    state.selectedDate = el.dataset.date;
+    renderCalendar();
+    renderDetail();
+    if (window.innerWidth < 1050) $('detailDate').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+}
+
+function listCard(schedule) {
+  const missing = scheduleMissingReasons(schedule);
+  const color = scheduleColors(schedule)[0];
+  return `<article class="list-card" style="--company-color:${escapeHtml(color)}"><div class="list-date">${escapeHtml(fmtDate(schedule.date).replace(/（.*$/, ''))}<small>${escapeHtml(schedule.departureTime || '未入力・未定')}</small></div><div class="list-main"><strong>${escapeHtml(purposeName(schedule.purposeId))} ／ ${escapeHtml(regionName(schedule.regionId))}</strong><p>${escapeHtml(storeSummary(schedule))}<br>担当者：${escapeHtml(employeeSummary(schedule))}　車両：${escapeHtml(carSummary(schedule))}</p>${missing.length ? `<span class="incomplete-chip">未入力・未定：${escapeHtml(missing.join('・'))}</span>` : ''}</div><button type="button" class="btn small list-open" data-open-schedule="${escapeHtml(schedule.id)}">詳細</button></article>`;
+}
+function renderList() {
+  const rows = modeSchedules();
+  const titles = { arrival: '入国予定', departure: '帰国予定', personstore: '担当者・店舗別', incomplete: '未入力・未定' };
+  $('listTitle').textContent = titles[state.mode] || '予定一覧';
+  $('listDescription').textContent = state.mode === 'personstore' ? '担当者と店舗は片方だけでも、両方でも絞り込めます。' : '条件に合う予定を日付順に表示します。';
+  $('listCount').textContent = `${rows.length}件`;
+  $('scheduleList').innerHTML = rows.length ? rows.map(listCard).join('') : '<div class="empty">該当する予定はありません。</div>';
+  qsa('[data-open-schedule]', $('scheduleList')).forEach((b) => b.addEventListener('click', () => {
+    const s = state.data.schedules.find((x) => x.id === b.dataset.openSchedule);
+    if (!s) return;
+    state.selectedDate = s.date;
+    renderDetail(s.id);
+    $('detailDate').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+}
+
+function scheduleDetailCard(s) {
+  const colors = scheduleColors(s);
+  const missing = scheduleMissingReasons(s);
+  const stores = s.stores?.length ? s.stores.map((r) => {
+    const company = companyById(r.companyId);
+    const store = storeById(r.storeId);
+    const counts = s.purposeId === 'APT' ? `　入国 ${Number(r.arrivalCount || 0)}名／帰国 ${Number(r.departureCount || 0)}名` : '';
+    return `<div class="summary-line store-line" style="--company-color:${escapeHtml(company?.color || '#aeb9c7')}"><b>${escapeHtml(company?.name || '会社未設定')}</b>${escapeHtml(store?.name || '店舗未設定')}${counts}${r.note ? `<br><small>${escapeHtml(r.note)}</small>` : ''}</div>`;
+  }).join('') : '<div class="summary-line"><b>会社・店舗</b>未入力</div>';
+  const flights = s.flights?.length ? s.flights.map(flightDetailBox).join('') : (s.purposeId === 'APT' ? '<div class="flight-box">航空便：未入力・未定</div>' : '');
+  const files = s.files?.length ? s.files.map((f) => {
+    const label = f.category === 'face' ? '顔写真' : f.category === 'arrival_itinerary' ? '入国旅程表' : f.category === 'departure_itinerary' ? '帰国旅程表' : '旧資料';
+    return `<div class="file-box"><div class="file-head"><strong>${escapeHtml(label)}</strong><a class="file-link" href="/files/${encodeURIComponent(f.id)}" target="_blank" rel="noopener">${escapeHtml(f.filename)}</a></div>${isEditor() ? `<div class="file-actions"><button type="button" class="btn small danger" data-delete-file="${escapeHtml(f.id)}">ファイル削除</button></div>` : ''}</div>`;
+  }).join('') : '';
+  return `<article class="schedule-card" style="--company-color:${escapeHtml(colors[0])}"><h3>${escapeHtml(s.departureTime || '未入力・未定')}　${escapeHtml(purposeName(s.purposeId))}</h3>${missing.length ? `<div class="incomplete-chip">未入力・未定：${escapeHtml(missing.join('・'))}</div>` : ''}<p><strong>${escapeHtml(regionName(s.regionId))}</strong>${s.returnDate ? ` ／ 帰着 ${escapeHtml(fmtDate(s.returnDate))}` : ''}</p>${stores}<div class="summary-line"><b>担当者</b>${escapeHtml(employeeSummary(s))}</div><div class="summary-line"><b>車両</b>${escapeHtml(carSummary(s))}</div>${s.otherContent ? `<div class="summary-line"><b>内容</b>${escapeHtml(s.otherContent)}</div>` : ''}${s.otherTransport ? `<div class="summary-line"><b>交通・補足</b>${escapeHtml(s.otherTransport)}</div>` : ''}${s.memo ? `<div class="summary-line"><b>メモ</b>${escapeHtml(s.memo)}</div>` : ''}${flights}${files}${isEditor() ? `<div class="card-actions"><button type="button" class="btn small" data-edit-schedule="${escapeHtml(s.id)}">編集</button></div>` : isTimeEditor() ? `<div class="card-actions"><button type="button" class="btn small primary" data-edit-departure-time="${escapeHtml(s.id)}">出発時間変更</button></div>` : ''}</article>`;
+}
+function renderDetail(focusId = '') {
+  $('detailDate').textContent = state.selectedDate ? fmtDate(state.selectedDate) : '—';
+  // 選択日の詳細にも、上部の地域・目的フィルターを必ず反映する。
+  // カレンダーで絞り込まれているのに詳細だけ全件表示される不整合を防ぐ。
+  let rows = filteredBase().filter((s) => s.date === state.selectedDate);
+  if (focusId) rows = rows.filter((s) => s.id === focusId);
+  const hasBaseFilter = Boolean(($('regionFilter')?.value || '') || ($('purposeFilter')?.value || ''));
+  const emptyMessage = hasBaseFilter ? 'この日の予定に、選択中の地域・目的に合う予定はありません。' : 'この日の予定はありません。';
+  $('detailArea').classList.toggle('empty', !rows.length);
+  $('detailArea').innerHTML = rows.length ? rows.map(scheduleDetailCard).join('') : `<div class="empty">${emptyMessage}</div>`;
+  qsa('[data-edit-schedule]', $('detailArea')).forEach((b) => b.addEventListener('click', () => openScheduleForm(b.dataset.editSchedule)));
+  qsa('[data-edit-departure-time]', $('detailArea')).forEach((b) => b.addEventListener('click', () => openDepartureTimeForm(b.dataset.editDepartureTime)));
+  qsa('[data-check-flight]', $('detailArea')).forEach((b) => b.addEventListener('click', () => checkFlight(b.dataset.checkFlight, b)));
+  qsa('[data-delete-file]', $('detailArea')).forEach((b) => b.addEventListener('click', () => deleteFile(b.dataset.deleteFile)));
+}
+
+function renderMode() {
+  const titles = { month: '月間予定', arrival: '入国予定', departure: '帰国予定', personstore: '担当者・店舗別', incomplete: '未入力・未定' };
+  $('pageTitle').textContent = titles[state.mode] || '月間予定';
+  qsa('[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.mode));
+  const month = state.mode === 'month';
+  $('calendarPanel').hidden = !month;
+  $('listPanel').hidden = month;
+  $('monthControls').hidden = !month;
+  renderFilters();
+  renderStats();
+  if (month) renderCalendar(); else renderList();
+  renderDetail();
+}
+function renderAll() {
+  renderSession();
+  renderFilters();
+  renderMode();
+}
+
+async function loadData(showLoading = true) {
+  if (showLoading) setBanner('Cloudflareのデータを読み込んでいます…');
+  try {
+    const data = await api('/api/bootstrap');
+    state.data = data;
+    if (!state.data.usage) state.data.usage = { flight: 0, flightLimit: 300, vision: 0, visionLimit: 900, openai: 0, openaiLimit: 300, openaiWeb: 0, openaiWebLimit: 100 };
+    renderAll();
+    setBanner('');
+    return true;
+  } catch (e) {
+    console.error(e);
+    setBanner(`データ読込エラー：${e.message}　ログインボタンなどの画面操作は利用できます。`, true);
+    renderSession();
+    renderFilters();
+    renderMode();
+    return false;
+  }
+}
+
+function setSelectOptions(el, rows, value = '') {
+  el.innerHTML = rows.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
+  if ([...el.options].some((o) => o.value === value)) el.value = value;
+}
+function choiceRows(kind) {
+  const regionId = $('scheduleRegion')?.value || '';
+  const source = kind === 'employee' ? state.data.employees : state.data.cars;
+  return source.filter((x) => x.active && (!regionId || !x.regionId || x.regionId === regionId));
+}
+function choiceAllRows(kind) { return kind === 'employee' ? state.data.employees : state.data.cars; }
+function choiceIds(kind) {
+  const el = $(`${kind}Choices`);
+  try { return JSON.parse(el.dataset.selected || '[]'); } catch { return []; }
+}
+function setChoiceIds(kind, ids) {
+  const valid = [...new Set((ids || []).filter(Boolean))];
+  $(`${kind}Choices`).dataset.selected = JSON.stringify(valid);
+  renderChoicePicker(kind);
+}
+function renderChoicePicker(kind) {
+  const label = kind === 'employee' ? '担当者' : '車両';
+  const picker = $(`${kind}Picker`);
+  const container = $(`${kind}Choices`);
+  const selected = choiceIds(kind);
+  const rows = choiceRows(kind);
+  const allRows = choiceAllRows(kind);
+  picker.innerHTML = `<option value="">${label}を選択してください</option>${rows.filter((x) => !selected.includes(x.id)).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  const selectedRows = selected.map((id) => allRows.find((x) => x.id === id)).filter(Boolean);
+  container.innerHTML = selectedRows.length
+    ? selectedRows.map((x) => `<span class="selected-choice">${escapeHtml(x.name)}<button type="button" aria-label="${escapeHtml(x.name)}を外す" data-remove-choice="${escapeHtml(kind)}" data-choice-id="${escapeHtml(x.id)}">×</button></span>`).join('')
+    : `<span class="choice-empty">未選択でも保存できます。</span>`;
+  qsa(`[data-remove-choice="${kind}"]`, container).forEach((b) => b.addEventListener('click', () => setChoiceIds(kind, selected.filter((id) => id !== b.dataset.choiceId))));
+}
+function addPickerChoice(kind) {
+  const picker = $(`${kind}Picker`);
+  const id = picker.value;
+  if (!id) return;
+  setChoiceIds(kind, [...choiceIds(kind), id]);
+}
+function updateScheduleConditionalFields() {
+  const purpose = $('schedulePurpose').value;
+  $('returnDateWrap').hidden = purpose !== 'BUS';
+  $('otherContentWrap').hidden = purpose !== 'OTH';
+  $('flightSection').hidden = purpose === 'PAT';
+  $('flightHint').textContent = purpose === 'APT' ? '空港送迎で航空便が0件の場合は「未入力・未定」扱いになります。' : '航空便は必要な場合だけ登録してください。';
+}
+function addStoreRow(value = {}) {
+  const row = document.createElement('div');
+  row.className = 'dynamic-row store-row';
+  row.innerHTML = `<label class="field">会社<select class="store-company"></select></label><label class="field">店舗<select class="store-store"><option value="">未選択</option>
