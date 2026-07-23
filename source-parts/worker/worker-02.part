@@ -1,0 +1,173 @@
+.bind(id, trim(body.code, 60), name, validColor(trim(body.color, 20))).run();
+  } else if (type === 'store') {
+    await env.DB.prepare(`INSERT INTO app_stores_v2(id,company_id,code,name,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET company_id=excluded.company_id,code=excluded.code,name=excluded.name,active=1,updated_at=CURRENT_TIMESTAMP`)
+      .bind(id, trim(body.companyId, 80), trim(body.code, 60), name).run();
+  } else {
+    await env.DB.prepare(`INSERT INTO ${spec.table}(id,name,region_id,active,updated_at) VALUES(?,?,?,1,CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,region_id=excluded.region_id,active=1,updated_at=CURRENT_TIMESTAMP`)
+      .bind(id, name, trim(body.regionId, 80)).run();
+  }
+  return json({ ok: true, id });
+}
+
+async function deactivateMaster(request, env, type, id) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  const spec = masterSpec[type];
+  if (!spec) return fail('設定種類が不正です。', 404);
+  await env.DB.prepare(`UPDATE ${spec.table} SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
+  return json({ ok: true });
+}
+
+function sanitizeSchedule(body) {
+  const date = normalizeDate(body.date);
+  const regionId = trim(body.regionId, 80);
+  const purposeId = trim(body.purposeId, 80);
+  if (!date) throw new Error('日付を入力してください。');
+  if (!regionId) throw new Error('地域を選択してください。');
+  if (!purposeId) throw new Error('目的を選択してください。');
+  const returnDate = normalizeDate(body.returnDate);
+  if (returnDate && returnDate < date) throw new Error('帰着日は開始日以降にしてください。');
+  const stores = Array.isArray(body.stores) ? body.stores.slice(0, 50).map((x) => ({
+    companyId: trim(x.companyId, 80), storeId: trim(x.storeId, 80), arrivalCount: Math.max(0, Math.min(999, safeInt(x.arrivalCount))), departureCount: Math.max(0, Math.min(999, safeInt(x.departureCount))), note: trim(x.note, 300),
+  })).filter((x) => x.companyId || x.storeId || x.arrivalCount || x.departureCount || x.note) : [];
+  const employees = Array.isArray(body.employees) ? [...new Set(body.employees.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
+  const cars = Array.isArray(body.cars) ? [...new Set(body.cars.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
+  const flights = Array.isArray(body.flights) ? body.flights.slice(0, 30).map((x, index) => ({
+    id: trim(x.id, 80) || makeId('FLT'),
+    direction: trim(x.direction, 20),
+    sortOrder: index,
+    airlineCode: trim(x.airlineCode, 10).toUpperCase(),
+    flightNumber: trim(x.flightNumber, 30).toUpperCase(),
+    flightDate: normalizeDate(x.flightDate),
+    origin: trim(x.origin, 80).toUpperCase(),
+    destination: trim(x.destination, 80).toUpperCase(),
+    scheduledDeparture: normalizeTime(x.scheduledDeparture),
+    changedDeparture: normalizeTime(x.changedDeparture),
+    scheduledArrival: normalizeTime(x.scheduledArrival),
+    changedArrival: normalizeTime(x.changedArrival),
+    terminal: trim(x.terminal, 80), gate: trim(x.gate, 80), status: trim(x.status, 80) || '未確認', reservationNumber: trim(x.reservationNumber, 120), lastCheckedAt: trim(x.lastCheckedAt, 50) || null, checkSource: trim(x.checkSource, 120), checkUrl: trim(x.checkUrl, 1000), checkNote: trim(x.checkNote, 1000),
+  })).filter((x) => x.flightNumber || x.airlineCode || x.flightDate || x.origin || x.destination || x.reservationNumber || x.direction) : [];
+  return {
+    id: trim(body.id, 100) || makeId('SCH'), date, returnDate, regionId, purposeId,
+    departureTime: normalizeTime(body.departureTime), otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars, flights,
+  };
+}
+
+async function saveSchedule(request, env) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  let s;
+  try { s = sanitizeSchedule(await readJson(request)); } catch (e) { return fail(e.message); }
+  const statements = [
+    env.DB.prepare(`INSERT INTO app_schedules_v2(id,date,return_date,region_id,purpose_id,departure_time,other_content,other_transport,memo,created_at,updated_at,deleted_at)
+      VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,NULL)
+      ON CONFLICT(id) DO UPDATE SET date=excluded.date,return_date=excluded.return_date,region_id=excluded.region_id,purpose_id=excluded.purpose_id,departure_time=excluded.departure_time,other_content=excluded.other_content,other_transport=excluded.other_transport,memo=excluded.memo,updated_at=CURRENT_TIMESTAMP,deleted_at=NULL`)
+      .bind(s.id, s.date, s.returnDate || null, s.regionId, s.purposeId, s.departureTime || null, s.otherContent, s.otherTransport, s.memo),
+    env.DB.prepare('DELETE FROM app_schedule_stores_v2 WHERE schedule_id=?').bind(s.id),
+    env.DB.prepare('DELETE FROM app_schedule_employees_v2 WHERE schedule_id=?').bind(s.id),
+    env.DB.prepare('DELETE FROM app_schedule_cars_v2 WHERE schedule_id=?').bind(s.id),
+    env.DB.prepare('DELETE FROM app_flights_v2 WHERE schedule_id=?').bind(s.id),
+  ];
+  for (const r of s.stores) statements.push(env.DB.prepare('INSERT INTO app_schedule_stores_v2(schedule_id,company_id,store_id,arrival_count,departure_count,note) VALUES(?,?,?,?,?,?)').bind(s.id, r.companyId, r.storeId, r.arrivalCount, r.departureCount, r.note));
+  for (const id of s.employees) statements.push(env.DB.prepare('INSERT INTO app_schedule_employees_v2(schedule_id,employee_id) VALUES(?,?)').bind(s.id, id));
+  for (const id of s.cars) statements.push(env.DB.prepare('INSERT INTO app_schedule_cars_v2(schedule_id,car_id) VALUES(?,?)').bind(s.id, id));
+  for (const f of s.flights) statements.push(env.DB.prepare(`INSERT INTO app_flights_v2(id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(f.id, s.id, f.direction, f.sortOrder, f.airlineCode, f.flightNumber, f.flightDate, f.origin, f.destination, f.scheduledDeparture, f.changedDeparture, f.scheduledArrival, f.changedArrival, f.terminal, f.gate, f.status, f.reservationNumber, f.lastCheckedAt, f.checkSource, f.checkUrl, f.checkNote));
+  await env.DB.batch(statements);
+  return json({ ok: true, id: s.id });
+}
+
+async function deleteSchedule(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  await env.DB.prepare('UPDATE app_schedules_v2 SET deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(id).run();
+  return json({ ok: true });
+}
+
+async function updateDepartureTime(request, env, id) {
+  const auth = await requireRole(request, env, ['time_editor','manager','admin']);
+  if (auth.response) return auth.response;
+  const body = await readJson(request);
+  const departureTime = normalizeTime(body.departureTime);
+  if (body.departureTime && !departureTime) return fail('出発時間はHH:MM形式で入力してください。');
+  const exists = await env.DB.prepare('SELECT id FROM app_schedules_v2 WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!exists) return fail('予定が見つかりません。', 404);
+  await env.DB.prepare('UPDATE app_schedules_v2 SET departure_time=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(departureTime, id).run();
+  return json({ ok: true, id, departureTime });
+}
+
+const allowedExt = new Set(['pdf','jpg','jpeg','png','webp','gif','heic','heif']);
+function extension(name) { return name.includes('.') ? name.split('.').pop().toLowerCase() : ''; }
+function fileCategory(value) { return ['face','ticket','itinerary','arrival_itinerary','departure_itinerary'].includes(value) ? value : ''; }
+async function uploadFile(request, env, scheduleId, url) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  const category = fileCategory(url.searchParams.get('category'));
+  if (!category) return fail('ファイル区分が不正です。');
+  const exists = await env.DB.prepare('SELECT id FROM app_schedules_v2 WHERE id=? AND deleted_at IS NULL').bind(scheduleId).first();
+  if (!exists) return fail('予定が見つかりません。', 404);
+  const form = await request.formData();
+  const file = form.get('file');
+  if (!(file instanceof File)) return fail('ファイルを選択してください。');
+  if (file.size > 20 * 1024 * 1024) return fail('1ファイル20MBまでです。');
+  if (!allowedExt.has(extension(file.name))) return fail('対応していないファイル形式です。');
+  const id = makeId('FIL');
+  const safeName = file.name.replace(/[\\/\0]/g, '_').slice(0, 180);
+  const key = `${scheduleId}/${id}-${safeName}`;
+  const mime = file.type || 'application/octet-stream';
+  await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: mime } });
+  await env.DB.prepare(`INSERT INTO app_files_v2(id,schedule_id,category,filename,mime_type,size_bytes,r2_key,created_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(id, scheduleId, category, safeName, mime, file.size, key).run();
+  return json({ ok: true, file: { id, category, filename: safeName, mimeType: mime, sizeBytes: file.size } });
+}
+
+async function serveFile(env, id) {
+  const row = await env.DB.prepare('SELECT filename,mime_type,r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return new Response('Not found', { status: 404 });
+  const object = await env.FILES.get(row.r2_key);
+  if (!object) return new Response('Not found', { status: 404 });
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('content-type', row.mime_type || headers.get('content-type') || 'application/octet-stream');
+  headers.set('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(row.filename)}`);
+  headers.set('cache-control', 'private, max-age=300');
+  return new Response(object.body, { headers });
+}
+
+async function deleteFile(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  const row = await env.DB.prepare('SELECT r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('ファイルが見つかりません。', 404);
+  await env.FILES.delete(row.r2_key);
+  await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+  return json({ ok: true });
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
+  return btoa(binary);
+}
+async function getUsage(env, kind) {
+  const row = await env.DB.prepare('SELECT count FROM app_usage_v2 WHERE kind=? AND month=?').bind(kind, monthKey()).first();
+  return safeInt(row?.count, 0);
+}
+async function addUsage(env, kind, amount) {
+  await env.DB.prepare(`INSERT INTO app_usage_v2(kind,month,count) VALUES(?,?,?)
+    ON CONFLICT(kind,month) DO UPDATE SET count=count+excluded.count`).bind(kind, monthKey(), amount).run();
+}
+function extractOcrCandidates(text) {
+  const clean = String(text || '').replace(/\r/g, '');
+  const flightNumbers = [...new Set((clean.match(/\b[A-Z]{2,3}\s?[-]?\s?\d{1,4}[A-Z]?\b/g) || []).map((x) => x.replace(/\s|-/g, '')))].slice(0, 12);
+  const airportCodes = [...new Set(clean.match(/\b[A-Z]{3}\b/g) || [])].filter((x) => !['THE','AND','FOR','FROM','TOO','AIR','TKT','PNR'].includes(x)).slice(0, 20);
+  const dates = [...new Set(clean.match(/\b(?:20\d{2}[\/.\-]\d{1,2}[\/.\-]\d{1,2}|\d{1,2}[\/.\-]\d{1,2}[\/.\-]20\d{2}|\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s+20\d{2})\b/gi) || [])].slice(0, 10);
+  const reservation = [];
+  for (const line of clean.split('\n')) {
+    if (/(予約|RESERVATION|BOOKING|PNR|CONFIRMATION)/i.test(line)) reservation.push(line.trim().slice(0, 160));
+  }
+  return { flightNumbers, airportCodes, dates, reserva
