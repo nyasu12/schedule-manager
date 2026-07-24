@@ -7,7 +7,8 @@
     "build": "node scripts/build.mjs",
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
-    "check": "npm run build && node --check src/index.js && node --check public/app.js",
+    "check:public": "node scripts/check-public-safety.mjs",
+    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
     "user:set": "node scripts/set-user.mjs"
