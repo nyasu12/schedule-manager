@@ -1,17 +1,46 @@
-ons}</select></label></div>`;
+    }
+  }
+  catch (e) { toast(e.message, 6500); }
+  finally { button.disabled = false; }
+}
+
+function masterRows(type) {
+  if (type === 'region') return state.data.regions;
+  if (type === 'purpose') return state.data.purposes;
+  if (type === 'company') return state.data.companies;
+  if (type === 'store') return state.data.stores;
+  if (type === 'employee') return state.data.employees;
+  return state.data.cars;
+}
+function resetMasterForm() { $('masterId').value = ''; renderMasterFields(); }
+function renderMasterFields(row = null) {
+  const type = state.masterType;
+  const regions = state.data.regions.filter((x) => x.active !== false).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
+  const companies = state.data.companies.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
+  let html = '';
+  if (type === 'purpose') html = `<div class="settings-fields"><label class="field">予定タイプ名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">表示順<input id="masterSortOrder" type="number" min="0" max="9999" value="${Number(row?.sortOrder || 0)}"></label><label class="check-field"><input id="masterEnableOrganization" type="checkbox" ${row?.enableOrganization === false ? '' : 'checked'}> 組織・拠点を使う</label><label class="check-field"><input id="masterRequireTime" type="checkbox" ${row?.requireTime ? 'checked' : ''}> 開始時刻を必須にする</label><label class="check-field"><input id="masterRequireAssignee" type="checkbox" ${row?.requireAssignee ? 'checked' : ''}> 担当者を必須にする</label><label class="check-field"><input id="masterRequireResource" type="checkbox" ${row?.requireResource ? 'checked' : ''}> リソースを必須にする</label><label class="check-field"><input id="masterEnableTravel" type="checkbox" ${row?.enableTravel ? 'checked' : ''}> Travel拡張（航空便・旅程表）を有効にする</label><label class="check-field"><input id="masterRequireFlight" type="checkbox" ${row?.requireFlight ? 'checked' : ''}> 航空便を必須にする</label></div>`;
+  if (type === 'region') html = `<div class="settings-fields"><label class="field">エリア名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">表示順<input id="masterSortOrder" type="number" min="0" max="9999" value="${Number(row?.sortOrder || 0)}"></label></div>`;
+  if (type === 'company') html = `<div class="settings-fields"><label class="field">組織名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">コード<input id="masterCode" value="${escapeHtml(row?.code || '')}"></label><label class="field">識別色<input id="masterColor" type="color" value="${escapeHtml(row?.color || '#1769df')}"></label></div>`;
+  if (type === 'store') html = `<div class="settings-fields"><label class="field">拠点名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">組織<select id="masterCompany">${companies}</select></label><label class="field">コード<input id="masterCode" value="${escapeHtml(row?.code || '')}"></label></div>`;
+  if (type === 'employee' || type === 'car') html = `<div class="settings-fields"><label class="field">${type === 'employee' ? '担当者名' : 'リソース名'}<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">エリア<select id="masterRegion">${regions}</select></label></div>`;
   $('masterFields').innerHTML = html;
   if (row && type === 'store' && $('masterCompany')) $('masterCompany').value = row.companyId || '';
   if (row && (type === 'employee' || type === 'car') && $('masterRegion')) $('masterRegion').value = row.regionId || '';
 }
 function renderMasterList() {
   qsa('[data-master-type]').forEach((b) => b.classList.toggle('active', b.dataset.masterType === state.masterType));
-  const rows = masterRows(state.masterType).filter((x) => x.active);
+  const rows = masterRows(state.masterType).filter((x) => x.active !== false);
   $('masterList').innerHTML = rows.length ? rows.map((x) => {
     let sub = '';
+    if (state.masterType === 'purpose') {
+      const flags = [x.enableTravel ? 'Travel' : '', x.requireFlight ? '航空便必須' : '', x.requireTime ? '時刻必須' : '', x.requireAssignee ? '担当者必須' : '', x.requireResource ? 'リソース必須' : ''].filter(Boolean);
+      sub = `表示順 ${Number(x.sortOrder || 0)}${flags.length ? `　${flags.join(' / ')}` : ''}`;
+    }
+    if (state.masterType === 'region') sub = `表示順 ${Number(x.sortOrder || 0)}`;
     if (state.masterType === 'company') sub = `<span class="color-dot" style="background:${escapeHtml(x.color)}"></span>${escapeHtml(x.code || '')}`;
-    if (state.masterType === 'store') sub = `${escapeHtml(companyById(x.companyId)?.name || '会社未設定')}　${escapeHtml(x.code || '')}`;
+    if (state.masterType === 'store') sub = `${escapeHtml(companyById(x.companyId)?.name || '組織未設定')}　${escapeHtml(x.code || '')}`;
     if (state.masterType === 'employee' || state.masterType === 'car') sub = escapeHtml(regionName(x.regionId));
-    return `<div class="settings-row"><div><strong>${escapeHtml(x.name)}</strong><small>${sub}</small></div><div class="settings-row-actions"><button type="button" class="btn small" data-edit-master="${escapeHtml(x.id)}">編集</button><button type="button" class="btn small danger" data-delete-master="${escapeHtml(x.id)}">削除</button></div></div>`;
+    return `<div class="settings-row"><div><strong>${escapeHtml(x.name)}</strong><small>${sub}</small></div><div class="settings-row-actions"><button type="button" class="btn small" data-edit-master="${escapeHtml(x.id)}">編集</button><button type="button" class="btn small danger" data-delete-master="${escapeHtml(x.id)}">無効化</button></div></div>`;
   }).join('') : '<div class="empty">登録はありません。</div>';
   qsa('[data-edit-master]', $('masterList')).forEach((b) => b.addEventListener('click', () => {
     const row = masterRows(state.masterType).find((x) => x.id === b.dataset.editMaster);
@@ -26,18 +55,28 @@ async function saveMaster(event) {
   event.preventDefault();
   try {
     const body = { id: $('masterId').value, name: $('masterName').value.trim() };
+    if (state.masterType === 'purpose') {
+      body.sortOrder = Number($('masterSortOrder').value || 0);
+      body.enableOrganization = $('masterEnableOrganization').checked;
+      body.requireTime = $('masterRequireTime').checked;
+      body.requireAssignee = $('masterRequireAssignee').checked;
+      body.requireResource = $('masterRequireResource').checked;
+      body.enableTravel = $('masterEnableTravel').checked;
+      body.requireFlight = $('masterRequireFlight').checked;
+    }
+    if (state.masterType === 'region') body.sortOrder = Number($('masterSortOrder').value || 0);
     if (state.masterType === 'company') { body.code = $('masterCode').value.trim(); body.color = $('masterColor').value; }
     if (state.masterType === 'store') { body.companyId = $('masterCompany').value; body.code = $('masterCode').value.trim(); }
     if (state.masterType === 'employee' || state.masterType === 'car') body.regionId = $('masterRegion').value;
     await api(`/api/master/${state.masterType}`, { method: 'POST', body });
     await loadData(false);
     renderSettings();
-    toast('基本設定を保存しました。');
+    toast('設定を保存しました。');
   } catch (e) { toast(e.message, 3500); }
 }
 async function deleteMaster(id) {
-  if (!confirm('この設定を無効にしますか？')) return;
-  try { await api(`/api/master/${state.masterType}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadData(false); renderSettings(); toast('基本設定を無効にしました。'); }
+  if (!confirm('この設定を無効にしますか？既存の予定データは削除されません。')) return;
+  try { await api(`/api/master/${state.masterType}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadData(false); renderSettings(); toast('設定を無効にしました。'); }
   catch (e) { toast(e.message, 3500); }
 }
 
@@ -81,7 +120,7 @@ function bindEvents() {
   $('scheduleForm').addEventListener('submit', saveSchedule);
   $('departureTimeForm').addEventListener('submit', saveDepartureTime);
   $('deleteScheduleButton').addEventListener('click', deleteSchedule);
-  qsa('[data-open-settings]').forEach((b) => b.addEventListener('click', () => { if (!isAdmin()) return; state.masterType = 'company'; renderSettings(); openModal('settingsModal'); closeDrawer(); }));
+  qsa('[data-open-settings]').forEach((b) => b.addEventListener('click', () => { if (!isAdmin()) return; state.masterType = 'purpose'; renderSettings(); openModal('settingsModal'); closeDrawer(); }));
   qsa('[data-master-type]').forEach((b) => b.addEventListener('click', () => { state.masterType = b.dataset.masterType; renderSettings(); }));
   $('masterForm').addEventListener('submit', saveMaster);
   $('masterReset').addEventListener('click', resetMasterForm);
