@@ -47,7 +47,7 @@ const secretNames = new Set([
 ]);
 
 function isPlaceholder(value) {
-  const clean = String(value).trim().replace(/^['"]|['"]$/g, '');
+  const clean = String(value).trim().replace(/^[\'"]|[\'"]$/g, '');
   if (!clean) return true;
   return /^(?:replace|example|your[_-]|<|sk-\.\.\.|\.\.\.)/i.test(clean);
 }
@@ -104,7 +104,7 @@ for (const filePath of tracked) {
     if (!isPlaceholder(match[1])) findings.push(`${normalized}: database_id contains a non-placeholder value`);
   }
 
-  if (/"private_key"\s*:\s*"-----BEGIN PRIVATE KEY-----/i.test(text)) {
+  if (/"private_key"\s*:\s*"-----BEGIN\s+PRIVATE\s+KEY-----/i.test(text)) {
     findings.push(`${normalized}: possible embedded service-account private key`);
   }
 
