@@ -1,4 +1,39 @@
- return;
+    airlineCode: qs('.flight-airline', r).value,
+    flightNumber: qs('.flight-number', r).value,
+    flightDate: qs('.flight-date', r).value,
+  }), r]));
+  let reflected = 0;
+  incoming.forEach((raw, index) => {
+    const f = { ...normalizeFlightDirection(raw), direction };
+    const key = flightKey(f);
+    if (existing.has(key) && key !== '||') {
+      applyFlightToRow(existing.get(key), f, true);
+      reflected += 1;
+      return;
+    }
+    const target = candidates[index];
+    if (target) {
+      applyFlightToRow(target, f, true);
+      qs('.flight-direction', target).value = direction;
+      target.dataset.autofilled = '1';
+      existing.set(key, target);
+    } else {
+      addFlightRow({ ...f, direction });
+      const newRow = $('flightRows').lastElementChild;
+      newRow.dataset.autofilled = '1';
+      existing.set(key, newRow);
+    }
+    reflected += 1;
+  });
+  return reflected;
+}
+async function autoReadItineraryDirection(direction) {
+  const button = direction === '入国' ? $('readArrivalItinerary') : $('readDepartureItinerary');
+  const status = direction === '入国' ? $('arrivalReadStatus') : $('departureReadStatus');
+  const files = itineraryFiles(direction);
+  if (!files.length) {
+    toast(`${direction}旅程表のPDF・画像を先に選択してください。`, 3500);
+    return;
   }
   button.disabled = true;
   const parsedFlights = [];
@@ -54,35 +89,39 @@
   }
 }
 
-function resetFileInputs() { resetFacePhotoUploadRows(); resetItineraryUploadRows(); }
+function resetFileInputs() { resetFacePhotoUploadRows(); resetItineraryUploadRows(); if ($('generalAttachments')) $('generalAttachments').value = ''; }
 function openScheduleForm(id = '') {
   if (!isEditor()) return;
-  const s = id ? state.data.schedules.find((x) => x.id === id) : null;
-  $('scheduleModalTitle').textContent = s ? '予定を編集' : '新しい予定';
-  $('scheduleId').value = s?.id || '';
-  $('scheduleDate').value = s?.date || state.selectedDate || localDateString(new Date());
-  $('returnDate').value = s?.returnDate || '';
-  setSelectOptions($('scheduleRegion'), state.data.regions, s?.regionId || state.data.regions[0]?.id || '');
-  setSelectOptions($('schedulePurpose'), state.data.purposes, s?.purposeId || 'APT');
-  $('departureTime').value = s?.departureTime || '';
-  $('otherContent').value = s?.otherContent || '';
-  $('otherTransport').value = s?.otherTransport || '';
-  $('scheduleMemo').value = s?.memo || '';
+  const schedule = id ? state.data.schedules.find((x) => x.id === id) : null;
+  $('scheduleModalTitle').textContent = schedule ? '予定を編集' : '新しい予定';
+  $('scheduleId').value = schedule?.id || '';
+  $('scheduleDate').value = schedule?.date || state.selectedDate || localDateString(new Date());
+  $('returnDate').value = schedule?.returnDate || '';
+  const regions = state.data.regions.filter((x) => x.active !== false || x.id === schedule?.regionId);
+  const purposes = state.data.purposes.filter((x) => x.active !== false || x.id === schedule?.purposeId);
+  setSelectOptions($('scheduleRegion'), regions, schedule?.regionId || regions[0]?.id || '');
+  setSelectOptions($('schedulePurpose'), purposes, schedule?.purposeId || purposes[0]?.id || '');
+  $('workflowStatus').value = schedule?.workflowStatus || 'planned';
+  $('departureTime').value = schedule?.departureTime || '';
+  $('otherContent').value = schedule?.otherContent || '';
+  $('otherTransport').value = schedule?.otherTransport || '';
+  $('scheduleMemo').value = schedule?.memo || '';
   $('storeRows').innerHTML = '';
-  if (s?.stores?.length) s.stores.forEach(addStoreRow);
+  if (schedule?.stores?.length) schedule.stores.forEach(addStoreRow);
   else addStoreRow({});
-  setChoiceIds('employee', s?.employees || []);
-  setChoiceIds('car', s?.cars || []);
+  setChoiceIds('employee', schedule?.employees || []);
+  setChoiceIds('car', schedule?.cars || []);
   $('flightRows').innerHTML = '';
-  (s?.flights || []).forEach(addFlightRow);
+  (schedule?.flights || []).forEach(addFlightRow);
   resetFileInputs();
   $('arrivalReadStatus').textContent = '入国旅程表を選択してください。';
   $('departureReadStatus').textContent = '帰国旅程表を選択してください。';
-  $('deleteScheduleButton').hidden = !s;
+  $('deleteScheduleButton').hidden = !schedule;
   $('scheduleError').hidden = true;
   updateScheduleConditionalFields();
   openModal('scheduleModal');
 }
+
 function openDepartureTimeForm(id) {
   if (!canEditDepartureTime()) return;
   const schedule = state.data.schedules.find((x) => x.id === id);
@@ -90,7 +129,7 @@ function openDepartureTimeForm(id) {
   $('departureTimeScheduleId').value = schedule.id;
   $('quickDepartureTime').value = schedule.departureTime || '';
   $('departureTimeError').hidden = true;
-  $('departureTimeTitle').textContent = `${fmtDate(schedule.date)} 出発時間変更`;
+  $('departureTimeTitle').textContent = `${fmtDate(schedule.date)} 開始時間変更`;
   openModal('departureTimeModal');
   setTimeout(() => $('quickDepartureTime').focus(), 0);
 }
@@ -105,7 +144,7 @@ async function saveDepartureTime(event) {
     await api(`/api/schedules/${encodeURIComponent(id)}/departure-time`, { method: 'POST', body: { departureTime: $('quickDepartureTime').value } });
     closeModal('departureTimeModal');
     await loadData(false);
-    toast('出発時間を更新しました。');
+    toast('開始時間を更新しました。');
   } catch (e) {
     error.textContent = e.message;
     error.hidden = false;
@@ -130,7 +169,9 @@ function selectedChoiceValues(containerId) {
   try { return JSON.parse($(containerId).dataset.selected || '[]'); } catch { return []; }
 }
 async function uploadSelectedFiles(scheduleId) {
+  const general = $('generalAttachments') ? [...$('generalAttachments').files] : [];
   const groups = [
+    { category: 'attachment', files: general },
     { category: 'face', files: facePhotoFiles() },
     { category: 'arrival_itinerary', files: itineraryFiles('入国') },
     { category: 'departure_itinerary', files: itineraryFiles('帰国') },
@@ -160,14 +201,15 @@ async function saveSchedule(event) {
       returnDate: $('returnDate').value,
       regionId: $('scheduleRegion').value,
       purposeId: $('schedulePurpose').value,
+      workflowStatus: $('workflowStatus').value,
       departureTime: $('departureTime').value,
       otherContent: $('otherContent').value.trim(),
       otherTransport: $('otherTransport').value.trim(),
       memo: $('scheduleMemo').value.trim(),
-      stores: collectStoreRows(),
+      stores: purposeById($('schedulePurpose').value)?.enableOrganization === false ? [] : collectStoreRows(),
       employees: selectedChoiceValues('employeeChoices'),
       cars: selectedChoiceValues('carChoices'),
-      flights: collectFlightRows(),
+      flights: isTravelPurpose($('schedulePurpose').value) ? collectFlightRows() : [],
     };
     const result = await api('/api/schedules', { method: 'POST', body: payload });
     const uploadErrors = await uploadSelectedFiles(result.id);
@@ -210,24 +252,3 @@ async function checkFlight(id, button) {
       toast(`便変更の可能性あり：${names || '同日・同一路線に別便があります'}`, 7000);
     } else {
       toast(result?.requiresReview ? `${label}を反映しました。確認元リンクを目視確認してください。` : `${label}で確認しました。`, 5200);
-    }
-  }
-  catch (e) { toast(e.message, 6500); }
-  finally { button.disabled = false; }
-}
-
-function masterRows(type) {
-  if (type === 'company') return state.data.companies;
-  if (type === 'store') return state.data.stores;
-  if (type === 'employee') return state.data.employees;
-  return state.data.cars;
-}
-function resetMasterForm() { $('masterId').value = ''; renderMasterFields(); }
-function renderMasterFields(row = null) {
-  const type = state.masterType;
-  const regions = state.data.regions.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
-  const companies = state.data.companies.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
-  let html = '';
-  if (type === 'company') html = `<div class="settings-fields"><label class="field">会社名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">コード<input id="masterCode" value="${escapeHtml(row?.code || '')}"></label><label class="field">会社色<input id="masterColor" type="color" value="${escapeHtml(row?.color || '#1769df')}"></label></div>`;
-  if (type === 'store') html = `<div class="settings-fields"><label class="field">店舗名<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">会社<select id="masterCompany">${companies}</select></label><label class="field">コード<input id="masterCode" value="${escapeHtml(row?.code || '')}"></label></div>`;
-  if (type === 'employee' || type === 'car') html = `<div class="settings-fields"><label class="field">${type === 'employee' ? '担当者名' : '車両名'}<input id="masterName" required value="${escapeHtml(row?.name || '')}"></label><label class="field">地域<select id="masterRegion">${regi
