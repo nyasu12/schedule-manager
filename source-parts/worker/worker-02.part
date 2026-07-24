@@ -11,7 +11,7 @@
     selectResults(env.DB.prepare('SELECT schedule_id,car_id FROM app_schedule_cars_v2')),
     selectResults(env.DB.prepare(`SELECT id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note
       FROM app_flights_v2 ORDER BY schedule_id,sort_order,id`)),
-    selectResults(env.DB.prepare('SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_text,ocr_checked_at,created_at FROM app_files_v2 ORDER BY created_at')),
+    selectResults(env.DB.prepare('SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_checked_at,created_at FROM app_files_v2 ORDER BY created_at')),
     selectResults(env.DB.prepare('SELECT kind,count FROM app_usage_v2 WHERE month=?').bind(month)),
   ]);
 
@@ -36,7 +36,7 @@
   for (const r of flights) bySchedule.get(r.schedule_id)?.flights.push({
     id: r.id, direction: r.direction || '', sortOrder: r.sort_order || 0, airlineCode: r.airline_code || '', flightNumber: r.flight_number || '', flightDate: r.flight_date || '', origin: r.origin || '', destination: r.destination || '', scheduledDeparture: r.scheduled_departure || '', changedDeparture: r.changed_departure || '', scheduledArrival: r.scheduled_arrival || '', changedArrival: r.changed_arrival || '', terminal: r.terminal || '', gate: r.gate || '', status: r.status || '未確認', reservationNumber: r.reservation_number || '', lastCheckedAt: r.last_checked_at || '', checkSource: r.check_source || '', checkUrl: r.check_url || '', checkNote: r.check_note || '',
   });
-  for (const r of files) bySchedule.get(r.schedule_id)?.files.push({ id: r.id, category: r.category, filename: r.filename, mimeType: r.mime_type, sizeBytes: r.size_bytes, ocrText: r.ocr_text || '', ocrCheckedAt: r.ocr_checked_at || '', createdAt: r.created_at });
+  for (const r of files) bySchedule.get(r.schedule_id)?.files.push({ id: r.id, category: r.category, filename: r.filename, mimeType: r.mime_type, sizeBytes: r.size_bytes, ocrCheckedAt: r.ocr_checked_at || '', createdAt: r.created_at });
   const usageMap = Object.fromEntries(usage.map((u) => [u.kind, u.count]));
 
   return json({
