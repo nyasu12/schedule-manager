@@ -1,5 +1,10 @@
     cars: cars.map((x) => ({ id: x.id, name: x.name, regionId: x.region_id, active: !!x.active })),
-    schedules: [...bySchedule.values()],
+    schedules: [...bySchedule.values()].map((s) => session.role === 'time_editor' ? {
+      ...s,
+      memo: '',
+      files: [],
+      flights: (s.flights || []).map((f) => ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
+    } : s),
     usage: {
       flight: usageMap.flight || 0,
       flightLimit: safeInt(env.FLIGHT_MONTHLY_LIMIT, 300),

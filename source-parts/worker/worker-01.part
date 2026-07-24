@@ -104,7 +104,9 @@ async function selectResults(stmt) {
 }
 
 async function bootstrap(request, env) {
-  const session = await getSession(request, env);
+  const auth = await requireRole(request, env, ['time_editor','manager','admin']);
+  if (auth.response) return auth.response;
+  const session = auth.session;
   const month = monthKey();
   const [regions, purposes, holidays, companies, stores, employees, cars, schedules, scheduleStores, scheduleEmployees, scheduleCars, flights, files, usage] = await Promise.all([
     selectResults(env.DB.prepare('SELECT id,name,sort_order,active FROM app_regions_v2 ORDER BY active DESC,sort_order,name')),

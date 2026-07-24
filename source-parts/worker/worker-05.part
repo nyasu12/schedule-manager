@@ -50,7 +50,9 @@ async function uploadFile(request, env, scheduleId, url) {
   return json({ ok: true, file: { id, category, filename: safeName, mimeType: mime, sizeBytes: file.size } });
 }
 
-async function serveFile(env, id) {
+async function serveFile(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
   const row = await env.DB.prepare('SELECT filename,mime_type,r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
   if (!row) return new Response('Not found', { status: 404 });
   const object = await env.FILES.get(row.r2_key);

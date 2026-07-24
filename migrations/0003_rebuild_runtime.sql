@@ -146,8 +146,8 @@ CREATE INDEX IF NOT EXISTS idx_app_flights_schedule ON app_flights_v2(schedule_i
 CREATE INDEX IF NOT EXISTS idx_app_files_schedule ON app_files_v2(schedule_id);
 
 INSERT OR IGNORE INTO app_regions_v2 (id,name,sort_order) VALUES
-  ('FUKUSHIMA','福島',10),
-  ('GUNMA','群馬',20);
+  ('AREA_EAST','東エリア',10),
+  ('AREA_WEST','西エリア',20);
 
 INSERT OR IGNORE INTO app_purposes_v2 (id,name,sort_order) VALUES
   ('APT','空港送迎',10),
