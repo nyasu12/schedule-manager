@@ -73,7 +73,7 @@ export default {
       match = path.match(/^\/api\/flights\/([^/]+)\/check$/);
       if (match && request.method === 'POST') return await checkFlight(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/files\/([^/]+)$/);
-      if (match && request.method === 'GET') return await serveFile(env, decodeURIComponent(match[1]));
+      if (match && request.method === 'GET') return await serveFile(request, env, decodeURIComponent(match[1]));
       if (path.startsWith('/api/')) return fail('APIが見つかりません。', 404);
       return await env.ASSETS.fetch(request);
     } catch (e) {
