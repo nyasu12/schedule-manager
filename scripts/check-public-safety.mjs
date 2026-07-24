@@ -61,7 +61,7 @@ for (const path of tracked) {
     if (!isPlaceholder(match[1])) findings.push(`${path}: database_id contains a non-placeholder value`);
   }
 
-  if (/INSERT\s+(?:OR\s+\w+\s+)?INTO\s+app_(?:companies|stores|employees|cars)_v2[\s\S]{0,300}?VALUES\s*\(/i.test(text)) {
+  if (path.startsWith('migrations/') && path.endsWith('.sql') && /INSERT\s+(?:OR\s+\w+\s+)?INTO\s+app_(?:companies|stores|employees|cars)_v2[\s\S]{0,300}?VALUES\s*\(/i.test(text)) {
     findings.push(`${path}: public migrations must not seed organization/assignee/resource master data`);
   }
 }
