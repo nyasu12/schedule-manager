@@ -23,7 +23,7 @@
     }
   ],
   "vars": {
-    "APP_NAME": "空港送迎管理",
+    "APP_NAME": "Schedule Manager",
     "FLIGHT_MONTHLY_LIMIT": "300",
     "VISION_MONTHLY_LIMIT": "900",
     "OPENAI_MODEL": "gpt-5-mini",
