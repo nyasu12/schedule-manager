@@ -11,7 +11,7 @@ This public portfolio repository intentionally excludes production credentials a
 
 ## Runtime access
 
-Schedule/bootstrap data and stored attachments require an authenticated application session. The health endpoint and static frontend assets may remain public.
+Schedule/bootstrap data requires an authenticated application session. Stored attachments are restricted to manager/admin roles. The limited `time_editor` role does not receive attachment metadata, memo text, reservation numbers, or flight-check URLs/notes. Raw OCR text remains server-side and is not included in the bootstrap payload. The health endpoint and static frontend assets may remain public.
 
 ## Reporting
 
