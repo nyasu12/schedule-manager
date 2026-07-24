@@ -1,0 +1,77 @@
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    const blocked = ['flightaware.com','flightradar24.com','google.com','bing.com','kayak.com','skyscanner.com','trip.com','expedia.com','facebook.com','x.com','twitter.com','wikipedia.org'];
+    if (blocked.some((d) => host === d || host.endsWith(`.${d}`))) return '';
+    return raw;
+  } catch { return ''; }
+}
+function responseOutputText(data) {
+  if (typeof data?.output_text === 'string' && data.output_text.trim()) return data.output_text.trim();
+  const chunks = [];
+  for (const item of Array.isArray(data?.output) ? data.output : []) {
+    if (item?.type !== 'message') continue;
+    for (const c of Array.isArray(item.content) ? item.content : []) {
+      if (c?.type === 'output_text' && typeof c.text === 'string') chunks.push(c.text);
+      else if (typeof c?.text === 'string') chunks.push(c.text);
+    }
+  }
+  return chunks.join('\n').trim();
+}
+function parseJsonObjectText(text) {
+  const clean = String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  const a = clean.indexOf('{'), b = clean.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(clean.slice(a, b + 1)); } catch { return null; }
+}
+function webFlightMatches(row, parsed) {
+  if (!parsed?.found || !parsed?.official_source) return false;
+  if (row.flight_date && normalizeDate(parsed.flight_date) !== row.flight_date) return false;
+  const fake = {
+    ident_iata: parsed.flight_number || '',
+    origin_iata: parsed.origin || '',
+    destination_iata: parsed.destination || '',
+    scheduled_out: parsed.flight_date ? `${parsed.flight_date}T12:00:00Z` : '',
+  };
+  if (!identMatches(row, fake)) return false;
+  if (row.origin && !airportMatches(row.origin, parsed.origin)) return false;
+  if (row.destination && !airportMatches(row.destination, parsed.destination)) return false;
+  return true;
+}
+async function searchOfficialFlightWithOpenAI(env, row) {
+  if (!env.OPENAI_API_KEY || !row.flight_date || !targetIdent(row)) return null;
+  const used = await getUsage(env, 'openai_web');
+  const limit = safeInt(env.OPENAI_WEB_MONTHLY_LIMIT, 100);
+  if (used >= limit) throw new Error(`OpenAI Web確認のアプリ内上限（${limit}回/月）に達しました。`);
+  const model = trim(env.OPENAI_WEB_MODEL || 'gpt-5.4-nano', 80) || 'gpt-5.4-nano';
+  const ident = targetIdent(row);
+  const prompt = [
+    'You are verifying one airline flight for the optional Travel module of a schedule-management application.',
+    'Use web search. Use ONLY an official airline website or an official departure/arrival airport website as evidence.',
+    'Do not use FlightAware, Flightradar24, Google snippets, travel agencies, blogs, social media, Wikipedia, or other aggregators as the source.',
+    'The flight must match the requested flight number, requested travel date, origin and destination. If any required item cannot be verified from an official source, return found=false.',
+    'Never substitute a nearby date, a codeshare with a different route, or a different flight just because it looks similar.',
+    'Times must be local airport times in HH:MM. Return empty strings for details the official source does not show.',
+    'Return exactly one JSON object and no markdown.',
+    '{"found":true,"official_source":true,"flight_number":"Z2191","flight_date":"2026-10-28","origin":"NRT","destination":"MNL","scheduled_departure":"11:25","scheduled_arrival":"15:20","terminal":"","gate":"","status":"scheduled","source_name":"AirAsia official","source_url":"https://...","note":""}',
+    '',
+    `Requested flight: ${ident}`,
+    `Date: ${row.flight_date}`,
+    `Origin: ${row.origin || '(unknown)'}`,
+    `Destination: ${row.destination || '(unknown)'}`,
+    `Ticket departure time: ${row.scheduled_departure || '(unknown)'}`,
+    `Ticket arrival time: ${row.scheduled_arrival || '(unknown)'}`,
+  ].join('\n');
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model, tools: [{ type: 'web_search' }], input: prompt, reasoning: { effort: 'low' }, max_output_tokens: 1200 }),
+  });
+  const data = await response.json().catch(() => ({}));
+  await addUsage(env, 'openai_web', 1);
+  if (!response.ok) throw new Error(`OpenAI Web確認に失敗しました: ${data?.error?.message || `HTTP ${response.status}`}`);
+  const parsed = parseJsonObjectText(responseOutputText(data));
+  if (!parsed || !webFlightMatches(row, parsed)) return null;
+  const url = officialWebUrl(parsed.source_url);
+  if (!url) return null;
+  return {
+    changedDeparture: normalizeTime(parsed.scheduled_departure),

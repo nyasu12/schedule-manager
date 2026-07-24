@@ -1,0 +1,81 @@
+        type: 'json_schema',
+        json_schema: {
+          name: 'flight_itinerary_extraction',
+          strict: true,
+          schema: OPENAI_TRAVEL_SCHEMA,
+        },
+      },
+      max_completion_tokens: 2200,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data?.error?.message || `OpenAI API HTTP ${response.status}`;
+    throw new Error(`OpenAI旅程表解析に失敗しました: ${detail}`);
+  }
+  await addUsage(env, 'openai', 1);
+  const choice = data?.choices?.[0]?.message;
+  if (choice?.refusal) throw new Error(`OpenAIが解析を拒否しました: ${trim(choice.refusal, 200)}`);
+  const content = choice?.content;
+  if (!content) throw new Error('OpenAIから旅程表解析結果が返りませんでした。');
+  let parsed;
+  try { parsed = JSON.parse(content); } catch { throw new Error('OpenAIの旅程表解析結果JSONを読み取れませんでした。'); }
+  const reservationNumber = trim(parsed?.reservationNumber, 120).toUpperCase();
+  const flights = (Array.isArray(parsed?.flights) ? parsed.flights : [])
+    .map((x, i) => normalizeAiFlight({ ...x, reservationNumber: x?.reservationNumber || reservationNumber }, i))
+    .filter(meaningfulFlight);
+  return { reservationNumber, flights, model, used: used + 1, limit };
+}
+
+async function visionRecognizeFile(env, file) {
+  if (!env.GOOGLE_VISION_API_KEY) throw new Error('GOOGLE_VISION_API_KEY が未設定です。');
+  if (!(file instanceof File)) throw new Error('画像またはPDFを選択してください。');
+  if (file.size > 7 * 1024 * 1024) throw new Error('自動読み取りは1ファイル7MBまでです。');
+  const ext = extension(file.name || '');
+  const inferredMime = ({ pdf:'application/pdf', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', gif:'image/gif' })[ext] || '';
+  const mime = String(file.type || inferredMime).toLowerCase();
+  const supported = ['image/jpeg','image/png','image/webp','image/gif','application/pdf'];
+  if (!supported.includes(mime)) throw new Error('自動読み取りはPDF・JPG・PNG・WebP・GIFに対応しています。');
+  const conservativeUnits = mime === 'application/pdf' ? 5 : 1;
+  const used = await getUsage(env, 'vision');
+  const limit = safeInt(env.VISION_MONTHLY_LIMIT, 900);
+  if (used + conservativeUnits > limit) throw new Error(`Google Visionのアプリ内上限（${limit}単位/月）に達するため読み取りを停止しました。`);
+  const content = arrayBufferToBase64(await file.arrayBuffer());
+  let endpoint, payload;
+  if (mime === 'application/pdf') {
+    endpoint = `https://vision.googleapis.com/v1/files:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ inputConfig: { mimeType: 'application/pdf', content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] }, pages: [1,2,3,4,5] }] };
+  } else {
+    endpoint = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ image: { content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] } }] };
+  }
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error?.message || 'Google Visionの読み取りに失敗しました。');
+  let texts = [], units = 1;
+  if (mime === 'application/pdf') {
+    const pages = data?.responses?.[0]?.responses || [];
+    units = Math.max(1, pages.length);
+    texts = pages.map((p) => p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || '').filter(Boolean);
+  } else {
+    const p = data?.responses?.[0] || {};
+    texts = [p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || ''].filter(Boolean);
+  }
+  const text = texts.join('\n\n--- PAGE ---\n\n').trim();
+  await addUsage(env, 'vision', units);
+  return { text, units, used: used + units, limit };
+}
+
+async function previewTravelDocument(request, env) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  const form = await request.formData();
+  const file = form.get('file');
+  const targetDirection = ['入国','帰国'].includes(String(form.get('targetDirection') || '')) ? String(form.get('targetDirection')) : '';
+  try {
+    const recognized = await visionRecognizeFile(env, file);
+    const rulesBase = parseTravelDocument(recognized.text);
+    const rulesParsed = targetDirection ? { ...rulesBase, flights: (rulesBase.flights || []).map(forceJapanPhilippinesDirection).filter((f) => f.direction === targetDirection) } : rulesBase;
+    let parsed = rulesParsed;
+    let parser = 'rules';
+    let aiWarning = '';

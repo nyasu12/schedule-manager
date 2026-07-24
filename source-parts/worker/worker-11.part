@@ -1,0 +1,87 @@
+    let openai = { used: await getUsage(env, 'openai'), limit: safeInt(env.OPENAI_MONTHLY_LIMIT, 300), model: trim(env.OPENAI_MODEL || 'gpt-5-mini', 80) || 'gpt-5-mini' };
+    if (env.OPENAI_API_KEY) {
+      try {
+        const aiParsed = await parseTravelDocumentWithOpenAI(env, recognized.text, targetDirection);
+        parsed = mergeTravelParses(aiParsed, rulesParsed);
+        if (targetDirection) parsed = { ...parsed, flights: (parsed.flights || []).map(forceJapanPhilippinesDirection).filter((f) => f.direction === targetDirection) };
+        parser = aiParsed.flights.length ? 'openai' : 'rules';
+        openai = { used: aiParsed.used, limit: aiParsed.limit, model: aiParsed.model };
+        if (!aiParsed.flights.length && rulesParsed.flights.length) aiWarning = 'OpenAIでは便を確定できなかったため、従来ルールの解析結果を使用しました。';
+      } catch (e) {
+        aiWarning = e?.message || String(e);
+        parsed = rulesParsed;
+        parser = 'rules';
+      }
+    } else {
+      aiWarning = 'OPENAI_API_KEY が未設定のため、従来ルールだけで解析しました。';
+    }
+    return json({
+      ok: true,
+      filename: file.name,
+      text: recognized.text,
+      parsed,
+      targetDirection,
+      parser,
+      aiWarning,
+      openai,
+      candidates: extractOcrCandidates(recognized.text),
+      units: recognized.units,
+      used: recognized.used,
+      limit: recognized.limit,
+    });
+  } catch (e) {
+    const message = e?.message || String(e);
+    const status = /未設定/.test(message) ? 503 : /上限/.test(message) ? 429 : 400;
+    return fail(message, status);
+  }
+}
+
+async function runVision(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  if (!env.GOOGLE_VISION_API_KEY) return fail('GOOGLE_VISION_API_KEY が未設定です。', 503);
+  const row = await env.DB.prepare('SELECT id,mime_type,size_bytes,r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('ファイルが見つかりません。', 404);
+  const mime = String(row.mime_type || '').toLowerCase();
+  const supported = ['image/jpeg','image/png','image/webp','image/gif','application/pdf'];
+  if (!supported.includes(mime)) return fail('この形式はGoogle Vision読み取り対象外です。JPG・PNG・WebP・GIF・PDFを使用してください。');
+  if (safeInt(row.size_bytes) > 7 * 1024 * 1024) return fail('OCRは1ファイル7MBまでです。原本は20MBまで保存できます。');
+  const conservativeUnits = mime === 'application/pdf' ? 5 : 1;
+  const used = await getUsage(env, 'vision');
+  const limit = safeInt(env.VISION_MONTHLY_LIMIT, 900);
+  if (used + conservativeUnits > limit) return fail(`Google Visionのアプリ内上限（${limit}単位/月）に達するため読み取りを停止しました。`, 429);
+  const object = await env.FILES.get(row.r2_key);
+  if (!object) return fail('R2上のファイルが見つかりません。', 404);
+  const content = arrayBufferToBase64(await object.arrayBuffer());
+  let endpoint;
+  let payload;
+  if (mime === 'application/pdf') {
+    endpoint = `https://vision.googleapis.com/v1/files:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ inputConfig: { mimeType: 'application/pdf', content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] }, pages: [1,2,3,4,5] }] };
+  } else {
+    endpoint = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(env.GOOGLE_VISION_API_KEY)}`;
+    payload = { requests: [{ image: { content }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }], imageContext: { languageHints: ['ja','en'] } }] };
+  }
+  const vision = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const data = await vision.json().catch(() => ({}));
+  if (!vision.ok) return fail('Google Visionの読み取りに失敗しました。', 502, data?.error?.message || data);
+  let texts = [];
+  let units = 1;
+  if (mime === 'application/pdf') {
+    const pages = data?.responses?.[0]?.responses || [];
+    units = Math.max(1, pages.length);
+    texts = pages.map((p) => p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || '').filter(Boolean);
+  } else {
+    const p = data?.responses?.[0] || {};
+    texts = [p?.fullTextAnnotation?.text || p?.textAnnotations?.[0]?.description || ''].filter(Boolean);
+  }
+  const text = texts.join('\n\n--- PAGE ---\n\n').trim();
+  await addUsage(env, 'vision', units);
+  const candidates = extractOcrCandidates(text);
+  await env.DB.prepare('UPDATE app_files_v2 SET ocr_text=?,ocr_json=?,ocr_checked_at=CURRENT_TIMESTAMP WHERE id=?').bind(text, JSON.stringify(candidates), id).run();
+  return json({ ok: true, text, candidates, units, used: used + units, limit });
+}
+
+function airportValueParts(value) {
+  if (!value) return [];
+  if (typeof value === 'string') return [value];

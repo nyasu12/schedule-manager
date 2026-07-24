@@ -1,0 +1,114 @@
+    if (!grouped[key].length) continue;
+    const combined = grouped[key].join('\n');
+    const summaryBlock = grouped[key].find((b) => timesFromBlock(b).length >= 2 && airportCodesFromBlock(b).length >= 2) || combined;
+    const detailedBlock = grouped[key].find((b) => extractFlightIdObjects(b).length || parseDateFromText(b, fallbackYear)) || combined;
+    const ids = extractFlightIdObjects(combined);
+    const ident = ids[0] || globalIds[legIndex] || {};
+    const times = timesFromBlock(summaryBlock);
+    const airports = airportCodesFromBlock(summaryBlock);
+    const origin = airports[0] || '';
+    const destination = airports[1] || '';
+    const flightDate = parseDateFromText(detailedBlock, fallbackYear) || parseDateFromText(combined, fallbackYear);
+    flights.push({
+      direction: directionFromRoute(origin, destination, combined),
+      sortOrder: flights.length + 1,
+      airlineCode: ident.airlineCode || '',
+      flightNumber: ident.flightNumber || '',
+      flightDate,
+      origin,
+      destination,
+      scheduledDeparture: times[0] || '',
+      scheduledArrival: times[1] || '',
+      reservationNumber,
+      terminal: terminalFromBlock(detailedBlock),
+      gate: '',
+    });
+  }
+  if (!flights.length) {
+    for (const ident of globalIds.slice(0, 8)) {
+      const start = Math.max(0, ident.index - 500), end = Math.min(clean.length, ident.index + 700);
+      const around = clean.slice(start, end);
+      const times = timesFromBlock(around);
+      const airports = airportCodesFromBlock(around);
+      flights.push({
+        direction: directionFromRoute(airports[0] || '', airports[1] || '', around),
+        sortOrder: flights.length + 1,
+        airlineCode: ident.airlineCode,
+        flightNumber: ident.flightNumber,
+        flightDate: parseDateFromText(around, fallbackYear),
+        origin: airports[0] || '',
+        destination: airports[1] || '',
+        scheduledDeparture: times[0] || '',
+        scheduledArrival: times[1] || '',
+        reservationNumber,
+        terminal: terminalFromBlock(around),
+        gate: '',
+      });
+    }
+  }
+  // 全く同じ便を重複させない。
+  const unique = [];
+  const seen = new Set();
+  for (const f of flights) {
+    const key = `${f.airlineCode}|${f.flightNumber}|${f.flightDate}|${f.origin}|${f.destination}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(f);
+  }
+  return { reservationNumber, flights: unique.slice(0, 12) };
+}
+
+
+function normalizeAiFlight(value, index = 0) {
+  const rawCode = trim(value?.airlineCode, 10).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let rawNumber = trim(value?.flightNumber, 30).toUpperCase().replace(/\s+/g, '');
+  if (rawCode && rawNumber.startsWith(rawCode)) rawNumber = rawNumber.slice(rawCode.length);
+  const date = normalizeDate(value?.flightDate);
+  const departure = normalizeTime(value?.scheduledDeparture);
+  const arrival = normalizeTime(value?.scheduledArrival);
+  const dir = ['入国','帰国','その他'].includes(value?.direction) ? value.direction : 'その他';
+  const confidence = Math.max(0, Math.min(1, Number(value?.confidence) || 0));
+  return forceJapanPhilippinesDirection({
+    direction: dir,
+    sortOrder: index + 1,
+    airlineCode: rawCode,
+    flightNumber: rawNumber,
+    flightDate: date,
+    origin: trim(value?.origin, 80).toUpperCase(),
+    destination: trim(value?.destination, 80).toUpperCase(),
+    scheduledDeparture: departure,
+    scheduledArrival: arrival,
+    reservationNumber: trim(value?.reservationNumber, 120).toUpperCase(),
+    terminal: trim(value?.terminal, 80),
+    gate: trim(value?.gate, 80),
+    confidence,
+    notes: trim(value?.notes, 300),
+  });
+}
+
+function meaningfulFlight(f) {
+  if (!f) return false;
+  const hasIdent = !!(f.airlineCode && f.flightNumber);
+  const hasRouteAndTime = !!(f.origin && f.destination && (f.scheduledDeparture || f.scheduledArrival));
+  return hasIdent || hasRouteAndTime;
+}
+
+function mergeTravelParses(primary, fallback) {
+  const a = Array.isArray(primary?.flights) ? primary.flights : [];
+  const b = Array.isArray(fallback?.flights) ? fallback.flights : [];
+  if (!a.length) return fallback;
+  const merged = a.map((flight, index) => {
+    const key = `${flight.airlineCode || ''}${flight.flightNumber || ''}`.toUpperCase();
+    const match = b.find((x) => `${x.airlineCode || ''}${x.flightNumber || ''}`.toUpperCase() === key && key) || b[index] || {};
+    const out = { ...flight };
+    for (const field of ['direction','airlineCode','flightNumber','flightDate','origin','destination','scheduledDeparture','scheduledArrival','reservationNumber','terminal','gate']) {
+      if (!out[field] && match[field]) out[field] = match[field];
+    }
+    return out;
+  }).filter(meaningfulFlight);
+  const seen = new Set();
+  const unique = [];
+  for (const f of merged) {
+    const key = `${f.airlineCode}|${f.flightNumber}|${f.flightDate}|${f.origin}|${f.destination}`;
+    if (seen.has(key)) continue;
+    seen.add(key);

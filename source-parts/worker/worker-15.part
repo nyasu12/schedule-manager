@@ -1,0 +1,85 @@
+    changedArrival: normalizeTime(parsed.scheduled_arrival),
+    terminal: trim(parsed.terminal || row.terminal, 80),
+    gate: trim(parsed.gate || row.gate, 80),
+    status: 'Web公式情報確認（要目視）',
+    source: trim(parsed.source_name, 120) || 'OpenAI Web検索（公式情報）',
+    url,
+    note: trim(parsed.note, 700) || 'OpenAI Web検索で公式サイトの一致候補を確認しました。リンク先を目視確認してください。',
+    webUsed: used + 1,
+    webLimit: limit,
+  };
+}
+
+async function checkFlight(request, env, id) {
+  const auth = await requireRole(request, env, ['manager','admin']);
+  if (auth.response) return auth.response;
+  if (!env.FLIGHTAWARE_API_KEY) return fail('FlightAware APIキーはまだ設定されていません。', 503);
+  const row = await env.DB.prepare('SELECT * FROM app_flights_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('フライトが見つかりません。', 404);
+  const rawFlight = trim(row.flight_number, 30).replace(/\s/g, '');
+  const airline = trim(row.airline_code, 10).replace(/\s/g, '').toUpperCase();
+  if (!rawFlight) return fail('便名・番号を入力してから確認してください。');
+  if (!/[A-Z]/i.test(rawFlight) && !airline) return fail('数字だけの便番号の場合は航空会社コードも入力してください。');
+  const ident = targetIdent(row);
+  const warnings = [];
+  let latestAeroUsage = await getUsage(env, 'flight');
+  const aeroLimit = safeInt(env.FLIGHT_MONTHLY_LIMIT, 300);
+
+  // 1) 実運航ウィンドウ。指定日・経路まで一致した便だけ採用し、別日の flights[0] は絶対に使わない。
+  try {
+    const live = await aeroGet(env, `https://aeroapi.flightaware.com/aeroapi/flights/${encodeURIComponent(ident)}`);
+    latestAeroUsage = live.used;
+    if (aeroAuthError(live)) return fail('FlightAware AeroAPIキーまたは契約権限を確認してください。', 502, live.data?.title || live.data?.error || live.response.status);
+    if (aeroRateError(live)) return fail('FlightAware AeroAPIのレート上限に達しました。時間を置いて再試行してください。', 429);
+    if (live.response.ok) {
+      const exact = pickExactAeroFlight(live.data, row, 'flights');
+      if (exact) {
+        const result = operationalResult(row, exact);
+        await applyFlightCheck(env, id, result);
+        return json({ ok: true, source: result.source, matchType: 'operational', flight: { id, ...result, lastCheckedAt: nowIso() }, used: latestAeroUsage, limit: aeroLimit });
+      }
+      warnings.push('AeroAPI実運航情報には、指定日・便番号・経路が一致する便がありませんでした。');
+    } else {
+      warnings.push(`AeroAPI実運航情報 HTTP ${live.response.status}`);
+    }
+  } catch (e) {
+    if (/上限/.test(e?.message || '')) return fail(e.message, 429);
+    warnings.push(e?.message || String(e));
+  }
+
+  // 2) 将来の航空会社公開スケジュール。対象日の前後もUTCずれ対策として検索し、ローカル出発日で厳密照合。
+  if (row.flight_date) {
+    try {
+      const start = addIsoDays(row.flight_date, -1);
+      const end = addIsoDays(row.flight_date, 2);
+      const url = new URL(`https://aeroapi.flightaware.com/aeroapi/schedules/${start}/${end}`);
+      if (airline) url.searchParams.set('airline', airline);
+      const number = flightNumberOnly(row);
+      if (number) url.searchParams.set('flight_number', number);
+      const origin = bestAirportCode(row.origin);
+      const destination = bestAirportCode(row.destination);
+      if (origin) url.searchParams.set('origin', origin);
+      if (destination) url.searchParams.set('destination', destination);
+      url.searchParams.set('max_pages', '1');
+      const scheduled = await aeroGet(env, url.toString());
+      latestAeroUsage = scheduled.used;
+      if (aeroAuthError(scheduled)) return fail('FlightAware AeroAPIキーまたは契約権限を確認してください。', 502, scheduled.data?.title || scheduled.data?.error || scheduled.response.status);
+      if (aeroRateError(scheduled)) return fail('FlightAware AeroAPIのレート上限に達しました。時間を置いて再試行してください。', 429);
+      if (scheduled.response.ok) {
+        const exact = pickExactAeroFlight(scheduled.data, row, 'scheduled');
+        if (exact) {
+          const result = scheduleResult(row, exact);
+          await applyFlightCheck(env, id, result);
+          return json({ ok: true, source: result.source, matchType: 'schedule', flight: { id, ...result, lastCheckedAt: nowIso() }, used: latestAeroUsage, limit: aeroLimit });
+        }
+        warnings.push('AeroAPI公開スケジュールにも、指定日・便番号・経路が一致する便がありませんでした。');
+
+        // 同日・同一路線に別便がある場合は「便変更の可能性あり」として候補だけ提示する。
+        // 同じ路線に複数便が通常運航するケースがあるため、候補を自動で登録便に置き換えない。
+        const candidateUrl = new URL(`https://aeroapi.flightaware.com/aeroapi/schedules/${start}/${end}`);
+        if (airline) candidateUrl.searchParams.set('airline', airline);
+        if (origin) candidateUrl.searchParams.set('origin', origin);
+        if (destination) candidateUrl.searchParams.set('destination', destination);
+        candidateUrl.searchParams.set('max_pages', '1');
+        const routeSchedule = await aeroGet(env, candidateUrl.toString());
+        latestAeroUsage = routeSchedule.used;

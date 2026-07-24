@@ -1,0 +1,101 @@
+  if (typeof value !== 'object') return [String(value)];
+  return [
+    value.code, value.code_iata, value.code_icao, value.code_lid,
+    value.iata, value.icao, value.lid,
+    value.alternate_ident, value.name, value.airport_name,
+  ].filter(Boolean).map(String);
+}
+function airportAliases(value) {
+  const out = new Set();
+  for (const part of airportValueParts(value)) {
+    const upper = String(part).toUpperCase().trim();
+    if (!upper) continue;
+    out.add(upper);
+    for (const code of upper.match(/\b[A-Z]{3,4}\b/g) || []) out.add(code);
+  }
+  return out;
+}
+function bestAirportCode(value) {
+  const aliases = [...airportAliases(value)];
+  return aliases.find((x) => /^[A-Z]{3}$/.test(x)) || aliases.find((x) => /^[A-Z]{4}$/.test(x)) || '';
+}
+function airportMatches(expected, actual) {
+  const wanted = airportAliases(expected);
+  if (!wanted.size) return true;
+  const got = airportAliases(actual);
+  if (!got.size) return false;
+  for (const x of wanted) if (got.has(x)) return true;
+  return false;
+}
+function airportTimeZone(value) {
+  const country = routeCountry(airportValueParts(value).join(' '));
+  if (country === 'JP') return 'Asia/Tokyo';
+  if (country === 'PH') return 'Asia/Manila';
+  return 'UTC';
+}
+function parseAeroTime(value, airport) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('ja-JP', { timeZone: airportTimeZone(airport), hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+}
+function parseAeroDate(value, airport) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: airportTimeZone(airport), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function addIsoDays(date, days) {
+  const clean = normalizeDate(date);
+  if (!clean) return '';
+  const d = new Date(`${clean}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function normalizeIdent(value) {
+  return trim(value, 80).toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+function aeroIdentValues(f) {
+  return [f?.ident_iata, f?.actual_ident_iata, f?.ident, f?.ident_icao, f?.actual_ident, f?.actual_ident_icao]
+    .map(normalizeIdent).filter(Boolean);
+}
+function targetIdent(row) {
+  const raw = normalizeIdent(row?.flight_number);
+  const airline = normalizeIdent(row?.airline_code);
+  if (!raw) return '';
+  return /[A-Z]/.test(raw) ? raw : `${airline}${raw}`;
+}
+function flightNumberOnly(row) {
+  const raw = normalizeIdent(row?.flight_number);
+  const airline = normalizeIdent(row?.airline_code);
+  if (!raw) return '';
+  if (airline && raw.startsWith(airline)) return raw.slice(airline.length);
+  const m = raw.match(/(\d{1,4}[A-Z]?)$/);
+  return m ? m[1] : raw;
+}
+function identMatches(row, f) {
+  const target = targetIdent(row);
+  const number = flightNumberOnly(row);
+  const airline = normalizeIdent(row?.airline_code);
+  const values = aeroIdentValues(f);
+  if (target && values.includes(target)) return true;
+  if (!number) return false;
+  return values.some((v) => v.endsWith(number) && (!airline || v.startsWith(airline) || v === target));
+}
+function aeroOriginBundle(f) { return [...airportValueParts(f?.origin), f?.origin_iata, f?.origin_icao, f?.origin_lid].filter(Boolean).join(' '); }
+function aeroDestinationBundle(f) { return [...airportValueParts(f?.destination), f?.destination_iata, f?.destination_icao, f?.destination_lid].filter(Boolean).join(' '); }
+function aeroOrigin(f) { return f?.origin_iata || f?.origin?.code_iata || f?.origin_lid || f?.origin?.code_lid || f?.origin_icao || f?.origin?.code_icao || bestAirportCode(f?.origin) || ''; }
+function aeroDestination(f) { return f?.destination_iata || f?.destination?.code_iata || f?.destination_lid || f?.destination?.code_lid || f?.destination_icao || f?.destination?.code_icao || bestAirportCode(f?.destination) || ''; }
+function flightDateMatches(row, f) {
+  if (!row?.flight_date) return true;
+  const departure = f?.scheduled_out || f?.scheduled_off || f?.estimated_out || f?.estimated_off || f?.actual_out || f?.actual_off;
+  return parseAeroDate(departure, row.origin || aeroOrigin(f)) === row.flight_date;
+}
+function flightRouteMatches(row, f) {
+  return airportMatches(row?.origin, aeroOriginBundle(f)) && airportMatches(row?.destination, aeroDestinationBundle(f));
+}
+function pickExactAeroFlight(data, row, collection = 'flights') {
+  const rows = Array.isArray(data?.[collection]) ? data[collection] : [];
+  return rows.find((f) => identMatches(row, f) && flightDateMatches(row, f) && flightRouteMatches(row, f)) || null;
+}
+function displayAeroIdent(f) {

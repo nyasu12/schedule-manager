@@ -72,7 +72,7 @@ async function makeSession(env, user) {
   return `${data}.${b64urlEncode(sig)}`;
 }
 async function getSession(request, env) {
-  const token = cookieValue(request, 'airport_session');
+  const token = cookieValue(request, 'schedule_session') || cookieValue(request, 'airport_session');
   if (!token || !env.AUTH_SECRET) return null;
   const [data, sigText] = token.split('.');
   if (!data || !sigText) return null;
@@ -107,109 +107,4 @@ async function bootstrap(request, env) {
   const session = await getSession(request, env);
   const month = monthKey();
   const [regions, purposes, holidays, companies, stores, employees, cars, schedules, scheduleStores, scheduleEmployees, scheduleCars, flights, files, usage] = await Promise.all([
-    selectResults(env.DB.prepare('SELECT id,name,sort_order FROM app_regions_v2 ORDER BY sort_order,name')),
-    selectResults(env.DB.prepare('SELECT id,name,sort_order FROM app_purposes_v2 ORDER BY sort_order,name')),
-    selectResults(env.DB.prepare('SELECT date,name FROM app_holidays_v2 ORDER BY date')),
-    selectResults(env.DB.prepare('SELECT id,code,name,color,active FROM app_companies_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,company_id,code,name,active FROM app_stores_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,name,region_id,active FROM app_employees_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,name,region_id,active FROM app_cars_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare(`SELECT id,date,return_date,region_id,purpose_id,departure_time,other_content,other_transport,memo,created_at,updated_at
-      FROM app_schedules_v2 WHERE deleted_at IS NULL ORDER BY date, COALESCE(departure_time,'99:99'), created_at`)),
-    selectResults(env.DB.prepare('SELECT id,schedule_id,company_id,store_id,arrival_count,departure_count,note FROM app_schedule_stores_v2 ORDER BY id')),
-    selectResults(env.DB.prepare('SELECT schedule_id,employee_id FROM app_schedule_employees_v2')),
-    selectResults(env.DB.prepare('SELECT schedule_id,car_id FROM app_schedule_cars_v2')),
-    selectResults(env.DB.prepare(`SELECT id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note
-      FROM app_flights_v2 ORDER BY schedule_id,sort_order,id`)),
-    selectResults(env.DB.prepare('SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_text,ocr_checked_at,created_at FROM app_files_v2 ORDER BY created_at')),
-    selectResults(env.DB.prepare('SELECT kind,count FROM app_usage_v2 WHERE month=?').bind(month)),
-  ]);
-
-  const bySchedule = new Map(schedules.map((s) => [s.id, {
-    id: s.id,
-    date: s.date,
-    returnDate: s.return_date || '',
-    regionId: s.region_id,
-    purposeId: s.purpose_id,
-    departureTime: s.departure_time || '',
-    otherContent: s.other_content || '',
-    otherTransport: s.other_transport || '',
-    memo: s.memo || '',
-    createdAt: s.created_at,
-    updatedAt: s.updated_at,
-    stores: [], employees: [], cars: [], flights: [], files: [],
-  }]));
-  for (const r of scheduleStores) bySchedule.get(r.schedule_id)?.stores.push({ id: r.id, companyId: r.company_id, storeId: r.store_id, arrivalCount: r.arrival_count, departureCount: r.departure_count, note: r.note || '' });
-  for (const r of scheduleEmployees) bySchedule.get(r.schedule_id)?.employees.push(r.employee_id);
-  for (const r of scheduleCars) bySchedule.get(r.schedule_id)?.cars.push(r.car_id);
-  for (const r of flights) bySchedule.get(r.schedule_id)?.flights.push({
-    id: r.id, direction: r.direction || '', sortOrder: r.sort_order || 0, airlineCode: r.airline_code || '', flightNumber: r.flight_number || '', flightDate: r.flight_date || '', origin: r.origin || '', destination: r.destination || '', scheduledDeparture: r.scheduled_departure || '', changedDeparture: r.changed_departure || '', scheduledArrival: r.scheduled_arrival || '', changedArrival: r.changed_arrival || '', terminal: r.terminal || '', gate: r.gate || '', status: r.status || '未確認', reservationNumber: r.reservation_number || '', lastCheckedAt: r.last_checked_at || '', checkSource: r.check_source || '', checkUrl: r.check_url || '', checkNote: r.check_note || '',
-  });
-  for (const r of files) bySchedule.get(r.schedule_id)?.files.push({ id: r.id, category: r.category, filename: r.filename, mimeType: r.mime_type, sizeBytes: r.size_bytes, ocrText: r.ocr_text || '', ocrCheckedAt: r.ocr_checked_at || '', createdAt: r.created_at });
-  const usageMap = Object.fromEntries(usage.map((u) => [u.kind, u.count]));
-
-  return json({
-    ok: true,
-    version: '0.3.13',
-    user: session,
-    regions: regions.map((x) => ({ id: x.id, name: x.name })),
-    purposes: purposes.map((x) => ({ id: x.id, name: x.name })),
-    holidays: holidays.map((x) => ({ date: x.date, name: x.name })),
-    companies: companies.map((x) => ({ id: x.id, code: x.code, name: x.name, color: x.color, active: !!x.active })),
-    stores: stores.map((x) => ({ id: x.id, companyId: x.company_id, code: x.code, name: x.name, active: !!x.active })),
-    employees: employees.map((x) => ({ id: x.id, name: x.name, regionId: x.region_id, active: !!x.active })),
-    cars: cars.map((x) => ({ id: x.id, name: x.name, regionId: x.region_id, active: !!x.active })),
-    schedules: [...bySchedule.values()],
-    usage: {
-      flight: usageMap.flight || 0,
-      flightLimit: safeInt(env.FLIGHT_MONTHLY_LIMIT, 300),
-      vision: usageMap.vision || 0,
-      visionLimit: safeInt(env.VISION_MONTHLY_LIMIT, 900),
-      openai: usageMap.openai || 0,
-      openaiLimit: safeInt(env.OPENAI_MONTHLY_LIMIT, 300),
-      openaiWeb: usageMap.openai_web || 0,
-      openaiWebLimit: safeInt(env.OPENAI_WEB_MONTHLY_LIMIT, 100),
-    },
-  });
-}
-
-async function login(request, env) {
-  const body = await readJson(request);
-  const username = trim(body.username, 80);
-  const password = String(body.password ?? '');
-  if (!username || !password) return fail('ログインIDとパスワードを入力してください。');
-  const user = await env.DB.prepare('SELECT username,password_hash,salt,iterations,role,active FROM app_users_v2 WHERE username=?').bind(username).first();
-  if (!user || !user.active) return fail('ログインIDまたはパスワードが違います。', 401);
-  const hash = await hashPassword(password, user.salt, safeInt(user.iterations, 100000));
-  if (hash !== user.password_hash) return fail('ログインIDまたはパスワードが違います。', 401);
-  const token = await makeSession(env, user);
-  return json({ ok: true, user: { username: user.username, role: user.role } }, 200, {
-    'set-cookie': `airport_session=${token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax`,
-  });
-}
-
-function logout() {
-  return json({ ok: true }, 200, { 'set-cookie': 'airport_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
-}
-
-function validColor(v) { return /^#[0-9a-f]{6}$/i.test(v) ? v : '#1769df'; }
-const masterSpec = {
-  company: { table: 'app_companies_v2', prefix: 'COM' },
-  store: { table: 'app_stores_v2', prefix: 'ST' },
-  employee: { table: 'app_employees_v2', prefix: 'EMP' },
-  car: { table: 'app_cars_v2', prefix: 'CAR' },
-};
-
-async function saveMaster(request, env, type) {
-  const auth = await requireRole(request, env, ['admin']);
-  if (auth.response) return auth.response;
-  const spec = masterSpec[type];
-  if (!spec) return fail('設定種類が不正です。', 404);
-  const body = await readJson(request);
-  const id = trim(body.id, 80) || makeId(spec.prefix);
-  const name = trim(body.name, 200);
-  if (!name) return fail('名称を入力してください。');
-  if (type === 'company') {
-    await env.DB.prepare(`INSERT INTO app_companies_v2(id,code,name,color,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET code=excluded.code,name=excluded.name,color=excluded.color,active=1,updated_at=CURRENT_TIMESTAMP`)
-      
+    selectResults(env.DB.prepare('SELECT id,name,sort_order,active FROM app_regions_v2 ORDER BY active DESC,sort_order,name')),

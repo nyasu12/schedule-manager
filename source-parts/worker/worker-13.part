@@ -1,0 +1,101 @@
+  const values = [f?.ident_iata, f?.actual_ident_iata, f?.ident, f?.actual_ident, f?.ident_icao, f?.actual_ident_icao]
+    .map((x) => trim(x, 40)).filter(Boolean);
+  return values[0] || '';
+}
+function possibleChangeCandidates(data, row, collection = 'scheduled') {
+  const rows = Array.isArray(data?.[collection]) ? data[collection] : [];
+  const seen = new Set();
+  const candidates = [];
+  for (const f of rows) {
+    if (!flightDateMatches(row, f) || !flightRouteMatches(row, f) || identMatches(row, f)) continue;
+    const flightNumber = displayAeroIdent(f);
+    if (!flightNumber) continue;
+    const origin = row.origin || aeroOrigin(f);
+    const destination = row.destination || aeroDestination(f);
+    const scheduledDeparture = parseAeroTime(f.scheduled_out || f.scheduled_off, origin);
+    const scheduledArrival = parseAeroTime(f.scheduled_in || f.scheduled_on, destination);
+    const key = `${normalizeIdent(flightNumber)}|${scheduledDeparture}|${scheduledArrival}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      flightNumber,
+      scheduledDeparture,
+      scheduledArrival,
+      origin: aeroOrigin(f) || bestAirportCode(row.origin),
+      destination: aeroDestination(f) || bestAirportCode(row.destination),
+    });
+  }
+  return candidates.slice(0, 8);
+}
+function possibleChangeNote(row, candidates) {
+  const registered = targetIdent(row) || trim(row.flight_number, 30);
+  const list = candidates.map((c) => `${c.flightNumber} ${c.scheduledDeparture || '--:--'}→${c.scheduledArrival || '--:--'}`).join(' / ');
+  return `登録便 ${registered} は指定日・経路で確認できませんでした。同日・同一路線の別便候補：${list}。便変更の可能性あり。`;
+}
+async function applyPossibleChangeCheck(env, id, row, candidates) {
+  const note = possibleChangeNote(row, candidates);
+  await env.DB.prepare(`UPDATE app_flights_v2
+    SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    WHERE id=?`)
+    .bind('便変更の可能性あり', 'AeroAPI公開スケジュール', '', note, id).run();
+  return note;
+}
+async function aeroGet(env, url) {
+  const used = await getUsage(env, 'flight');
+  const limit = safeInt(env.FLIGHT_MONTHLY_LIMIT, 300);
+  if (used >= limit) throw new Error(`便確認のAeroAPI問い合わせ上限（${limit}回/月）に達しました。`);
+  const response = await fetch(url, { headers: { 'x-apikey': env.FLIGHTAWARE_API_KEY, accept: 'application/json' } });
+  const data = await response.json().catch(() => ({}));
+  // AeroAPIは結果0件でも問い合わせ料金の対象になり得るため、HTTPリクエスト単位でカウントする。
+  await addUsage(env, 'flight', 1);
+  return { response, data, used: used + 1, limit };
+}
+function aeroAuthError(result) {
+  return result?.response?.status === 401 || result?.response?.status === 403;
+}
+function aeroRateError(result) { return result?.response?.status === 429; }
+function normalizeAeroStatus(f) {
+  if (f?.cancelled) return '欠航';
+  if (f?.diverted) return '目的地変更';
+  return trim(f?.status, 80) || '確認済';
+}
+async function applyFlightCheck(env, id, result) {
+  await env.DB.prepare(`UPDATE app_flights_v2
+    SET changed_departure=?,changed_arrival=?,terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    WHERE id=?`)
+    .bind(
+      normalizeTime(result.changedDeparture), normalizeTime(result.changedArrival), trim(result.terminal, 80), trim(result.gate, 80),
+      trim(result.status, 80) || '確認済', trim(result.source, 120), trim(result.url, 1000), trim(result.note, 1000), id,
+    ).run();
+}
+function operationalResult(row, f) {
+  const origin = row.origin || aeroOrigin(f);
+  const destination = row.destination || aeroDestination(f);
+  return {
+    changedDeparture: parseAeroTime(f.actual_out || f.estimated_out || f.actual_off || f.estimated_off || f.scheduled_out, origin),
+    changedArrival: parseAeroTime(f.actual_in || f.estimated_in || f.actual_on || f.estimated_on || f.scheduled_in, destination),
+    terminal: trim(f.terminal_destination || f.terminal_origin || row.terminal, 80),
+    gate: trim(f.gate_destination || f.gate_origin || row.gate, 80),
+    status: normalizeAeroStatus(f),
+    source: 'AeroAPI実運航情報',
+    url: '',
+    note: '便番号・搭乗日・出発地・到着地が一致した実運航情報を反映しました。',
+  };
+}
+function scheduleResult(row, f) {
+  const origin = row.origin || aeroOrigin(f);
+  const destination = row.destination || aeroDestination(f);
+  return {
+    changedDeparture: parseAeroTime(f.scheduled_out, origin),
+    changedArrival: parseAeroTime(f.scheduled_in, destination),
+    terminal: row.terminal || '',
+    gate: row.gate || '',
+    status: '公開スケジュール確認済',
+    source: 'AeroAPI公開スケジュール',
+    url: '',
+    note: '航空会社が公開した将来スケジュールで、便番号・搭乗日・出発地・到着地が一致しました。実運航情報ではありません。',
+  };
+}
+function officialWebUrl(value) {
+  const raw = trim(value, 1000);
+  if (!/^https?:\/\//i.test(raw)) return '';

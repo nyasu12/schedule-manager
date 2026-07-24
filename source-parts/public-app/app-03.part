@@ -1,4 +1,31 @@
-></select></label><label class="field">入国人数<input class="store-arrival" type="number" min="0" max="999" value="${Number(value.arrivalCount || 0)}"></label><label class="field">帰国人数<input class="store-departure" type="number" min="0" max="999" value="${Number(value.departureCount || 0)}"></label><label class="field">備考<input class="store-note" maxlength="300" value="${escapeHtml(value.note || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
+    ? selectedRows.map((x) => `<span class="selected-choice">${escapeHtml(x.name)}<button type="button" aria-label="${escapeHtml(x.name)}を外す" data-remove-choice="${escapeHtml(kind)}" data-choice-id="${escapeHtml(x.id)}">×</button></span>`).join('')
+    : `<span class="choice-empty">未選択でも保存できます。</span>`;
+  qsa(`[data-remove-choice="${kind}"]`, container).forEach((b) => b.addEventListener('click', () => setChoiceIds(kind, selected.filter((id) => id !== b.dataset.choiceId))));
+}
+function addPickerChoice(kind) {
+  const picker = $(`${kind}Picker`);
+  const id = picker.value;
+  if (!id) return;
+  setChoiceIds(kind, [...choiceIds(kind), id]);
+}
+function updateScheduleConditionalFields() {
+  const purpose = purposeById($('schedulePurpose').value) || {};
+  const travel = !!purpose.enableTravel;
+  $('returnDateWrap').hidden = false;
+  $('otherContentWrap').hidden = false;
+  $('organizationSection').hidden = purpose.enableOrganization === false;
+  $('flightSection').hidden = !travel;
+  $('travelDocumentsSection').hidden = !travel;
+  qsa('.travel-count', $('storeRows')).forEach((el) => { el.hidden = !travel; });
+  $('flightHint').textContent = travel
+    ? 'Travel機能が有効です。航空便が必須設定の場合、未登録の予定は「未確定・未割当」に表示されます。'
+    : '航空便はTravel機能を有効にした予定タイプだけで利用できます。';
+}
+
+function addStoreRow(value = {}) {
+  const row = document.createElement('div');
+  row.className = 'dynamic-row store-row';
+  row.innerHTML = `<label class="field">組織<select class="store-company"></select></label><label class="field">拠点<select class="store-store"><option value="">未選択</option></select></label><label class="field travel-count">到着人数<input class="store-arrival" type="number" min="0" max="999" value="${Number(value.arrivalCount || 0)}"></label><label class="field travel-count">出発人数<input class="store-departure" type="number" min="0" max="999" value="${Number(value.departureCount || 0)}"></label><label class="field">備考<input class="store-note" maxlength="300" value="${escapeHtml(value.note || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
   const companySelect = qs('.store-company', row);
   const activeCompanies = state.data.companies.filter((x) => x.active);
   companySelect.innerHTML = `<option value="">未選択</option>${activeCompanies.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
@@ -15,7 +42,9 @@
   qs('.row-remove', row).addEventListener('click', () => row.remove());
   refreshStores();
   $('storeRows').appendChild(row);
+  updateScheduleConditionalFields();
 }
+
 function addFlightRow(value = {}) {
   const row = document.createElement('div');
   row.className = 'dynamic-row flight-row';
@@ -163,39 +192,3 @@ function mergeParsedFlightsForDirection(flights, direction) {
   const relevant = rows.filter((r) => qs('.flight-direction', r).value === direction || flightRowIsBlank(r));
   const candidates = relevant.filter((r) => !flightRowHasMeaningfulManualData(r));
   const existing = new Map(rows.filter((r) => qs('.flight-direction', r).value === direction && flightRowHasMeaningfulManualData(r)).map((r) => [flightKey({
-    airlineCode: qs('.flight-airline', r).value,
-    flightNumber: qs('.flight-number', r).value,
-    flightDate: qs('.flight-date', r).value,
-  }), r]));
-  let reflected = 0;
-  incoming.forEach((raw, index) => {
-    const f = { ...normalizeFlightDirection(raw), direction };
-    const key = flightKey(f);
-    if (existing.has(key) && key !== '||') {
-      applyFlightToRow(existing.get(key), f, true);
-      reflected += 1;
-      return;
-    }
-    const target = candidates[index];
-    if (target) {
-      applyFlightToRow(target, f, true);
-      qs('.flight-direction', target).value = direction;
-      target.dataset.autofilled = '1';
-      existing.set(key, target);
-    } else {
-      addFlightRow({ ...f, direction });
-      const newRow = $('flightRows').lastElementChild;
-      newRow.dataset.autofilled = '1';
-      existing.set(key, newRow);
-    }
-    reflected += 1;
-  });
-  return reflected;
-}
-async function autoReadItineraryDirection(direction) {
-  const button = direction === '入国' ? $('readArrivalItinerary') : $('readDepartureItinerary');
-  const status = direction === '入国' ? $('arrivalReadStatus') : $('departureReadStatus');
-  const files = itineraryFiles(direction);
-  if (!files.length) {
-    toast(`${direction}旅程表のPDF・画像を先に選択してください。`, 3500);
-    

@@ -1,24 +1,50 @@
 # Schedule Manager
 
-Airport transportation schedule management web application built with Cloudflare Workers.
+A configurable schedule and resource management platform built on Cloudflare Workers, D1, and R2.
 
-This repository is a **public portfolio version** of the application. Production credentials, Cloudflare resource IDs, real company data, employee names, vehicle data, uploaded files, and schedule records are intentionally excluded.
+The core application is intentionally domain-neutral: teams can define schedule types, workflow rules, organizations, locations, assignees, resources, statuses, and attachments without changing the source code. Optional domain modules can add specialized behavior only where it is needed.
 
-## Features
+This repository is a **public portfolio version**. Production credentials, Cloudflare resource IDs, real organization data, staff names, resource data, uploaded files, and schedule records are intentionally excluded.
 
-- Monthly calendar and filtered schedule views
-- Arrival / departure schedule management
-- Company, store, employee, and vehicle master management
-- Role-based access: admin, manager, and departure-time editor
-- Multiple arrival / departure itinerary attachments
-- Multiple face-photo attachments
+## Highlights
+
+- Configurable schedule types instead of hard-coded workflows
+- Per-type rules for required start time, assignee, resource, organization, and flight information
+- Workflow status: draft, planned, confirmed, in progress, done, or cancelled
+- Organization / location / assignee / resource allocation
+- Generic file attachments stored in Cloudflare R2
+- Unassigned and incomplete-work views
+- Role-based access for administrators, schedule editors, and start-time editors
+- Optional **Travel extension** for flights, itineraries, OCR, and operational flight checks
+
+## Optional Travel extension
+
+Travel functionality is an extension of the scheduling platform, not a core assumption. A schedule type can enable the extension without requiring a flight, so ordinary schedules remain valid even when no airline segment is present. Flight requirements can be enabled separately for workflows such as airport transfers; the OCR and flight-verification features are intentionally specialized for air-travel operations.
+
+When enabled, the Travel extension provides:
+
+- Multiple flights per schedule
+- Arrival / departure itinerary attachments
+- Face-photo attachments where an operational workflow needs them
 - OCR-assisted itinerary parsing with Google Cloud Vision and OpenAI
 - Flight verification with FlightAware AeroAPI
-- Official-web fallback search through the OpenAI Responses API
-- Possible flight-number-change detection without silently overwriting the saved flight number
-- Cloudflare R2 file storage
-- Cloudflare D1 schedule and master-data storage
-- Japan Standard Time display for the latest flight-check timestamp
+- Official airline / airport website fallback through the OpenAI Responses API
+- Possible flight-number-change detection without silently replacing the saved flight number
+- Japan Standard Time display for flight-check timestamps
+
+## Architecture
+
+```text
+Browser
+  |
+  v
+Cloudflare Worker
+  |-- D1: schedules, users, configuration, workflow state, usage counters
+  |-- R2: generic attachments and optional Travel documents
+  |-- Google Vision: optional OCR
+  |-- OpenAI: optional document parsing / official-web fallback
+  `-- FlightAware AeroAPI: optional Travel flight checks
+```
 
 ## Tech stack
 
@@ -32,51 +58,20 @@ This repository is a **public portfolio version** of the application. Production
 | AI parsing / web fallback | OpenAI API |
 | Flight information | FlightAware AeroAPI |
 | Deployment | Wrangler |
-
-## Architecture
-
-```text
-Browser
-  |
-  v
-Cloudflare Worker
-  |-- D1: schedules, users, masters, usage counters
-  |-- R2: photos and itinerary files
-  |-- Google Vision: OCR
-  |-- OpenAI: itinerary parsing / official-web fallback
-  `-- FlightAware AeroAPI: schedule and operational checks
-```
-
-## Public repository safety
-
-The public version does **not** contain:
-
-- API keys or authentication secrets
-- Production Cloudflare resource IDs
-- Default passwords
-- Real company / store / employee / vehicle master data
-- Production schedules
-- Uploaded photos or itinerary documents
-- Production Worker URLs
-
-`wrangler.jsonc`, `.dev.vars`, and other local secret files are ignored by Git.
+| CI | GitHub Actions |
 
 ## Source layout
 
-The two large runtime files are stored as ordered source fragments under `source-parts/` so this portfolio snapshot can be published and reviewed safely through the repository tooling used to create it.
+The application sources are committed directly so the implementation can be reviewed without a generation step.
 
 ```text
-source-parts/worker/      -> src/index.js
-source-parts/public-app/  -> public/app.js
+src/index.js          Cloudflare Worker / API
+public/app.js         Browser application
+public/index.html     Main UI markup
+public/styles.css     UI styles
+migrations/           D1 schema and migrations
+scripts/              User-management utilities
 ```
-
-Run the build command to reconstruct the runtime files:
-
-```bash
-npm run build
-```
-
-The build performs SHA-256 integrity checks against the sanitized application snapshot. `npm run dev` and `npm run deploy` run this build step automatically. The generated `src/index.js` and `public/app.js` files are intentionally excluded from Git.
 
 ## Setup
 
@@ -88,7 +83,7 @@ npm install
 
 ### 2. Create Cloudflare resources
 
-Create a D1 database and R2 bucket. The examples in this repository use:
+Create a D1 database and R2 bucket. Example names:
 
 ```text
 schedule-manager-db
@@ -101,7 +96,7 @@ schedule-manager-files
 cp wrangler.example.jsonc wrangler.jsonc
 ```
 
-Replace `REPLACE_WITH_YOUR_D1_DATABASE_ID` with the ID of your own D1 database.
+Replace the placeholder D1 database ID with your own resource ID.
 
 ### 4. Configure secrets
 
@@ -111,13 +106,9 @@ For local development:
 cp .dev.vars.example .dev.vars
 ```
 
-Authentication requires:
+Authentication requires `AUTH_SECRET`.
 
-```text
-AUTH_SECRET
-```
-
-Optional integrations:
+Optional Travel integrations use:
 
 ```text
 GOOGLE_VISION_API_KEY
@@ -129,34 +120,21 @@ For production, register secrets with Cloudflare/Wrangler instead of committing 
 
 ### 5. Apply migrations
 
-Local:
-
 ```bash
 npm run db:migrate:local
-```
-
-Remote:
-
-```bash
+# or
 npm run db:migrate:remote
 ```
 
-The public migrations create the schema but intentionally do not seed production business data.
+Migration `0008_generalize_schedule_manager.sql` adds schedule-type rules, workflow status, generic attachments, generic starter schedule types, and optional Travel configuration while preserving legacy data.
 
 ### 6. Create an administrator
 
 No default account or password is included.
 
-Remote D1:
-
-```bash
-npm run user:set -- admin admin "<YOUR_STRONG_PASSWORD>" --remote
-```
-
-Local D1:
-
 ```bash
 npm run user:set -- admin admin "<YOUR_STRONG_PASSWORD>" --local
+# use --remote for Remote D1
 ```
 
 ### 7. Run locally
@@ -175,18 +153,45 @@ npm run deploy
 
 | Role | Permission |
 | --- | --- |
-| `admin` | Full schedule editing and master-data management |
+| `admin` | Full schedule editing and configuration management |
 | `manager` | Schedule editing |
-| `time_editor` | Departure-time changes only |
+| `time_editor` | Start-time changes only |
+
+## Schedule-type configuration
+
+Each schedule type can independently enable or require:
+
+- Start time
+- Assignee
+- Resource
+- Organization / location allocation
+- Travel extension
+- Flight information when Travel is enabled
+
+Default generalized examples include meetings, visits, tasks, and Travel. The legacy airport-transfer type remains available as a Travel-enabled example for compatibility with existing deployments.
+
+## Public repository safety
+
+The public version does **not** contain:
+
+- API keys or authentication secrets
+- Production Cloudflare resource IDs
+- Default passwords
+- Real organization / location / staff / resource master data
+- Production schedules
+- Uploaded photos or documents
+- Production Worker URLs
+
+`wrangler.jsonc`, `.dev.vars`, and other local secret files are ignored by Git.
 
 ## Validation
 
-GitHub Actions rebuilds both runtime files and runs JavaScript syntax checks on every pull request. The public snapshot has been validated successfully with the same integrity hashes used by the local build.
+GitHub Actions runs JavaScript syntax checks and applies every migration to a fresh SQLite database on pull requests.
 
 ## Portfolio note
 
-This repository demonstrates the architecture and implementation of the application while keeping operational data private. External integrations are optional; their related features remain unavailable until the corresponding API key is configured.
+This project demonstrates how a real domain-specific workflow can evolve into a configurable platform without discarding valuable specialized integrations. Compatibility-oriented internal table names remain in a few places so existing deployments can migrate incrementally, while the public UI and configuration model expose general scheduling concepts.
 
 ## Version
 
-Public portfolio snapshot based on application version **0.3.13**.
+Public portfolio version **0.4.0**.
