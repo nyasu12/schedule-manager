@@ -85,14 +85,3 @@ async function runVision(request, env, id) {
 function airportValueParts(value) {
   if (!value) return [];
   if (typeof value === 'string') return [value];
-  if (typeof value === 'object') return [value.code, value.name, value.city, value.iata_code, value.airport_code, value.friendly_name].filter(Boolean).map(String);
-  return [];
-}
-function airportCode(value) {
-  const parts = airportValueParts(value);
-  for (const part of parts) {
-    const m = part.toUpperCase().match(/\b([A-Z]{3})\b/);
-    if (m) return m[1];
-  }
-  return trim(parts[0] || '', 20).toUpperCase();
-}
