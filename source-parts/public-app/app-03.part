@@ -1,194 +1,105 @@
-    ? selectedRows.map((x) => `<span class="selected-choice">${escapeHtml(x.name)}<button type="button" aria-label="${escapeHtml(x.name)}を外す" data-remove-choice="${escapeHtml(kind)}" data-choice-id="${escapeHtml(x.id)}">×</button></span>`).join('')
-    : `<span class="choice-empty">未選択でも保存できます。</span>`;
-  qsa(`[data-remove-choice="${kind}"]`, container).forEach((b) => b.addEventListener('click', () => setChoiceIds(kind, selected.filter((id) => id !== b.dataset.choiceId))));
-}
-function addPickerChoice(kind) {
-  const picker = $(`${kind}Picker`);
-  const id = picker.value;
-  if (!id) return;
-  setChoiceIds(kind, [...choiceIds(kind), id]);
-}
+function currentScheduleType() { return scheduleTypeById($('schedulePurpose')?.value) || {}; }
 function updateScheduleConditionalFields() {
-  const purpose = purposeById($('schedulePurpose').value) || {};
-  const travel = !!purpose.enableTravel;
+  const type = currentScheduleType();
   $('returnDateWrap').hidden = false;
   $('otherContentWrap').hidden = false;
-  $('organizationSection').hidden = purpose.enableOrganization === false;
-  $('flightSection').hidden = !travel;
-  $('travelDocumentsSection').hidden = !travel;
-  qsa('.travel-count', $('storeRows')).forEach((el) => { el.hidden = !travel; });
-  $('flightHint').textContent = travel
-    ? 'Travel機能が有効です。航空便が必須設定の場合、未登録の予定は「未確定・未割当」に表示されます。'
-    : '航空便はTravel機能を有効にした予定タイプだけで利用できます。';
+  $('organizationSection').hidden = type.enableOrganization === false;
+  renderCustomFieldInputs();
+  updateExtensionScheduleForm(type);
 }
 
-function addStoreRow(value = {}) {
+function addLocationRow(value = {}) {
   const row = document.createElement('div');
   row.className = 'dynamic-row store-row';
-  row.innerHTML = `<label class="field">組織<select class="store-company"></select></label><label class="field">拠点<select class="store-store"><option value="">未選択</option></select></label><label class="field travel-count">到着人数<input class="store-arrival" type="number" min="0" max="999" value="${Number(value.arrivalCount || 0)}"></label><label class="field travel-count">出発人数<input class="store-departure" type="number" min="0" max="999" value="${Number(value.departureCount || 0)}"></label><label class="field">備考<input class="store-note" maxlength="300" value="${escapeHtml(value.note || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
-  const companySelect = qs('.store-company', row);
-  const activeCompanies = state.data.companies.filter((x) => x.active);
-  companySelect.innerHTML = `<option value="">未選択</option>${activeCompanies.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  companySelect.value = value.companyId || '';
-  function refreshStores() {
-    const storeSelect = qs('.store-store', row);
-    const selected = storeSelect.value || value.storeId || '';
-    const stores = state.data.stores.filter((x) => x.active && (!companySelect.value || x.companyId === companySelect.value));
-    storeSelect.innerHTML = `<option value="">未選択</option>${stores.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-    if ([...storeSelect.options].some((o) => o.value === selected)) storeSelect.value = selected;
-    value.storeId = '';
+  row.innerHTML = `<label class="field">組織<select class="store-company"></select></label><label class="field">拠点<select class="store-store"><option value="">未選択</option></select></label><label class="field">備考<input class="store-note" maxlength="300" value="${escapeHtml(value.note || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
+  const organizationSelect = qs('.store-company', row), activeOrganizations = state.data.organizations.filter((x) => x.active);
+  organizationSelect.innerHTML = `<option value="">未選択</option>${activeOrganizations.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  organizationSelect.value = value.organizationId ?? value.companyId ?? '';
+  function refreshLocations() {
+    const locationSelect = qs('.store-store', row), selected = locationSelect.value || value.locationId || value.storeId || '';
+    const locations = state.data.locations.filter((x) => x.active && (!organizationSelect.value || (x.organizationId ?? x.companyId) === organizationSelect.value));
+    locationSelect.innerHTML = `<option value="">未選択</option>${locations.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+    if ([...locationSelect.options].some((o) => o.value === selected)) locationSelect.value = selected;
   }
-  companySelect.addEventListener('change', refreshStores);
-  qs('.row-remove', row).addEventListener('click', () => row.remove());
-  refreshStores();
-  $('storeRows').appendChild(row);
-  updateScheduleConditionalFields();
+  organizationSelect.addEventListener('change', refreshLocations); qs('.row-remove', row).addEventListener('click', () => row.remove()); refreshLocations(); $('storeRows').appendChild(row);
 }
 
-function addFlightRow(value = {}) {
-  const row = document.createElement('div');
-  row.className = 'dynamic-row flight-row';
-  row.dataset.id = value.id || '';
-  row.dataset.changedDeparture = value.changedDeparture || '';
-  row.dataset.changedArrival = value.changedArrival || '';
-  row.dataset.status = value.status || '未確認';
-  row.dataset.lastCheckedAt = value.lastCheckedAt || '';
-  row.dataset.checkSource = value.checkSource || '';
-  row.dataset.checkUrl = value.checkUrl || '';
-  row.dataset.checkNote = value.checkNote || '';
-  row.innerHTML = `<label class="field">方向<select class="flight-direction"><option value="">未選択</option><option value="入国">入国</option><option value="帰国">帰国</option><option value="その他">その他</option></select></label><label class="field">航空会社コード<input class="flight-airline" maxlength="10" placeholder="JL" value="${escapeHtml(value.airlineCode || '')}"></label><label class="field">便名・番号<input class="flight-number" maxlength="30" placeholder="JL123 または 123" value="${escapeHtml(value.flightNumber || '')}"></label><label class="field">搭乗日<input class="flight-date" type="date" value="${escapeHtml(value.flightDate || '')}"></label><label class="field">出発地<input class="flight-origin" maxlength="80" placeholder="HND" value="${escapeHtml(value.origin || '')}"></label><label class="field">到着地<input class="flight-destination" maxlength="80" placeholder="FKS" value="${escapeHtml(value.destination || '')}"></label><label class="field">予定出発<input class="flight-depart" type="time" value="${escapeHtml(value.scheduledDeparture || '')}"></label><label class="field">予定到着<input class="flight-arrive" type="time" value="${escapeHtml(value.scheduledArrival || '')}"></label><label class="field wide">予約番号<input class="flight-reservation" maxlength="120" value="${escapeHtml(value.reservationNumber || '')}"></label><label class="field">ターミナル<input class="flight-terminal" maxlength="80" value="${escapeHtml(value.terminal || '')}"></label><label class="field">ゲート<input class="flight-gate" maxlength="80" value="${escapeHtml(value.gate || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
-  qs('.flight-direction', row).value = value.direction || '';
-  qs('.row-remove', row).addEventListener('click', () => row.remove());
-  $('flightRows').appendChild(row);
+function customFieldDefinitionsForType(typeId) {
+  return state.data.customFieldDefinitions.filter((field) => field.active !== false && (!field.scheduleTypeId || field.scheduleTypeId === typeId)).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
-function flightRowIsBlank(row) {
-  return !['.flight-airline','.flight-number','.flight-date','.flight-origin','.flight-destination','.flight-depart','.flight-arrive','.flight-reservation','.flight-terminal','.flight-gate']
-    .some((sel) => (qs(sel, row)?.value || '').trim()) && !qs('.flight-direction', row)?.value;
+function renderCustomFieldInputs(schedule = null) {
+  const container = $('customFieldRows'); if (!container) return;
+  const typeId = $('schedulePurpose')?.value || schedule?.scheduleTypeId || '';
+  const definitions = customFieldDefinitionsForType(typeId);
+  $('customFieldsSection').hidden = !definitions.length;
+  container.innerHTML = definitions.map((field) => {
+    const value = schedule?.customFields?.[field.id] ?? container.querySelector(`[data-custom-field="${CSS.escape(field.id)}"]`)?.value ?? '';
+    const required = field.required ? 'required' : '';
+    if (field.type === 'boolean') return `<label class="check-field"><input type="checkbox" data-custom-field="${escapeHtml(field.id)}" ${String(value) === 'true' ? 'checked' : ''}> ${escapeHtml(field.label)}</label>`;
+    if (field.type === 'select') return `<label class="field">${escapeHtml(field.label)}<select data-custom-field="${escapeHtml(field.id)}" ${required}><option value="">未選択</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select></label>`;
+    const inputType = ['number','date','time','url'].includes(field.type) ? field.type : 'text';
+    return `<label class="field">${escapeHtml(field.label)}<input type="${inputType}" data-custom-field="${escapeHtml(field.id)}" value="${escapeHtml(value)}" ${required}></label>`;
+  }).join('');
 }
-function flightKey(value) {
-  return `${String(value.airlineCode || '').toUpperCase()}|${String(value.flightNumber || '').toUpperCase()}|${value.flightDate || ''}`;
-}
-function airportCountry(value) {
-  const raw = String(value || '').toUpperCase();
-  const jp = new Set(['NRT','HND','FKS','KIX','ITM','NGO','CTS','FUK','OKA','SDJ','HIJ','KOJ','KMQ','NKM','IBR','UKB','TAK','MYJ','KCZ','OIT','KMJ','NGS','MMB','AKJ','AOJ','GAJ','KIJ','TOY','FSZ','SHB','HKD','KUH','OKJ','YGJ','IZO','TKS','UBJ','KKJ','HSG','KMI','ASJ','ISG','MMY']);
-  const ph = new Set(['MNL','CEB','CRK','DVO','KLO','ILO','PPS','TAC','BCD','MPH','CGY','GES','ZAM','LAO','TAG','DGT','BXU','CBO','OZC','SUG','TUG','VRC','USU']);
-  const codes = raw.match(/\b[A-Z]{3}\b/g) || [];
-  if (codes.some((x) => jp.has(x)) || /(JAPAN|TOKYO|NARITA|HANEDA|FUKUSHIMA|OSAKA|KANSAI|日本|東京|成田|羽田|福島|大阪|関西)/i.test(raw)) return 'JP';
-  if (codes.some((x) => ph.has(x)) || /(PHILIPPINES|MANILA|CEBU|CLARK|DAVAO|フィリピン|マニラ|セブ|クラーク|ダバオ)/i.test(raw)) return 'PH';
-  return '';
-}
-function normalizeFlightDirection(value) {
-  const f = { ...value };
-  const origin = airportCountry(f.origin), destination = airportCountry(f.destination);
-  if (origin === 'PH' && destination === 'JP') f.direction = '入国';
-  else if (origin === 'JP' && destination === 'PH') f.direction = '帰国';
-  else if (destination === 'JP' && origin !== 'JP') f.direction = '入国';
-  else if (origin === 'JP' && destination !== 'JP') f.direction = '帰国';
-  return f;
-}
-function flightRowHasMeaningfulManualData(row) {
-  return ['.flight-airline','.flight-number','.flight-origin','.flight-destination','.flight-depart','.flight-arrive','.flight-reservation','.flight-terminal','.flight-gate']
-    .some((sel) => (qs(sel, row)?.value || '').trim());
-}
-function applyFlightToRow(row, value, overwrite = false) {
-  value = normalizeFlightDirection(value);
-  const set = (sel, v) => { const el = qs(sel, row); if (el && v && (overwrite || !el.value)) el.value = v; };
-  set('.flight-direction', value.direction);
-  set('.flight-airline', value.airlineCode);
-  set('.flight-number', value.flightNumber);
-  set('.flight-date', value.flightDate);
-  set('.flight-origin', value.origin);
-  set('.flight-destination', value.destination);
-  set('.flight-depart', value.scheduledDeparture);
-  set('.flight-arrive', value.scheduledArrival);
-  set('.flight-reservation', value.reservationNumber);
-  set('.flight-terminal', value.terminal);
-  set('.flight-gate', value.gate);
-}
-function mergeParsedFlights(flights) {
-  const incoming = (flights || []).map(normalizeFlightDirection).filter((f) => f && Object.values(f).some(Boolean));
-  if (!incoming.length) return 0;
-  let rows = qsa('.flight-row', $('flightRows'));
-  const candidates = rows.filter((r) => !flightRowHasMeaningfulManualData(r));
-  const existing = new Map(rows.filter(flightRowHasMeaningfulManualData).map((r) => [flightKey({
-    airlineCode: qs('.flight-airline', r).value,
-    flightNumber: qs('.flight-number', r).value,
-    flightDate: qs('.flight-date', r).value,
-  }), r]));
-  let reflected = 0;
-  incoming.forEach((f, index) => {
-    const key = flightKey(f);
-    if (existing.has(key) && key !== '||') {
-      applyFlightToRow(existing.get(key), f, false);
-      reflected += 1;
-      return;
-    }
-    const target = candidates[index];
-    if (target) {
-      applyFlightToRow(target, f, true);
-      target.dataset.autofilled = '1';
-      existing.set(key, target);
-    } else {
-      addFlightRow(f);
-      const newRow = $('flightRows').lastElementChild;
-      newRow.dataset.autofilled = '1';
-      existing.set(key, newRow);
-    }
-    reflected += 1;
-  });
-  return reflected;
+function collectCustomFieldValues() {
+  const values = {};
+  qsa('[data-custom-field]', $('customFieldRows')).forEach((el) => { values[el.dataset.customField] = el.type === 'checkbox' ? String(el.checked) : el.value; });
+  return values;
 }
 
-function addFacePhotoUploadRow() {
-  const container = $('facePhotoRows');
-  const row = document.createElement('div');
-  row.className = 'face-upload-row';
-  row.innerHTML = `<label class="field">顔写真<input class="face-photo-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.gif,.heic,.heif"></label><button type="button" class="btn small danger row-remove">削除</button>`;
-  qs('.row-remove', row).addEventListener('click', () => {
-    const rows = qsa('.face-upload-row', container);
-    if (rows.length <= 1) qs('.face-photo-file', row).value = '';
-    else row.remove();
-  });
-  container.appendChild(row);
-}
-function resetFacePhotoUploadRows() {
-  $('facePhotoRows').innerHTML = '';
-  addFacePhotoUploadRow();
-}
-function facePhotoFiles() {
-  return qsa('.face-photo-file', $('facePhotoRows')).flatMap((input) => [...(input.files || [])]);
+function resetFileInputs() { if ($('generalAttachments')) $('generalAttachments').value = ''; }
+function openScheduleForm(id = '') {
+  if (!isEditor()) return;
+  const schedule = id ? state.data.schedules.find((x) => x.id === id) : null;
+  $('scheduleModalTitle').textContent = schedule ? '予定を編集' : '新しい予定'; $('scheduleId').value = schedule?.id || '';
+  $('scheduleDate').value = schedule?.date || state.selectedDate || localDateString(new Date()); $('returnDate').value = schedule?.returnDate || '';
+  const areas = state.data.areas.filter((x) => x.active !== false || x.id === schedule?.areaId), types = state.data.scheduleTypes.filter((x) => x.active !== false || x.id === schedule?.scheduleTypeId);
+  setSelectOptions($('scheduleRegion'), areas, schedule?.areaId || areas[0]?.id || ''); setSelectOptions($('schedulePurpose'), types, schedule?.scheduleTypeId || types[0]?.id || '');
+  $('workflowStatus').value = schedule?.workflowStatus || 'planned'; $('departureTime').value = schedule?.startTime || ''; $('otherContent').value = schedule?.otherContent || ''; $('otherTransport').value = schedule?.otherTransport || ''; $('scheduleMemo').value = schedule?.memo || '';
+  $('storeRows').innerHTML = ''; if (schedule?.locations?.length) schedule.locations.forEach(addLocationRow); else addLocationRow({});
+  setChoiceIds('assignee', schedule?.assignees || []); setChoiceIds('resource', schedule?.resources || []); resetFileInputs(); renderCustomFieldInputs(schedule);
+  $('deleteScheduleButton').hidden = !schedule; $('scheduleError').hidden = true;
+  const type = scheduleTypeById($('schedulePurpose').value) || {}; $('organizationSection').hidden = type.enableOrganization === false; openExtensionScheduleForm(schedule, type); openModal('scheduleModal');
 }
 
-function addItineraryUploadRow(direction) {
-  const container = direction === '入国' ? $('arrivalItineraryRows') : $('departureItineraryRows');
-  const row = document.createElement('div');
-  row.className = 'itinerary-upload-row';
-  row.dataset.direction = direction;
-  row.innerHTML = `<label class="field">${direction}旅程表<input class="itinerary-file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.gif"></label><button type="button" class="btn small danger row-remove">削除</button>`;
-  qs('.row-remove', row).addEventListener('click', () => {
-    const rows = qsa('.itinerary-upload-row', container);
-    if (rows.length <= 1) qs('.itinerary-file', row).value = '';
-    else row.remove();
-  });
-  container.appendChild(row);
+function openStartTimeForm(id) {
+  if (!canEditStartTime()) return;
+  const schedule = state.data.schedules.find((x) => x.id === id); if (!schedule) return;
+  $('departureTimeScheduleId').value = schedule.id; $('quickDepartureTime').value = schedule.startTime || ''; $('departureTimeError').hidden = true; $('departureTimeTitle').textContent = `${fmtDate(schedule.date)} 開始時間変更`; openModal('departureTimeModal'); setTimeout(() => $('quickDepartureTime').focus(), 0);
 }
-function resetItineraryUploadRows() {
-  $('arrivalItineraryRows').innerHTML = '';
-  $('departureItineraryRows').innerHTML = '';
-  addItineraryUploadRow('入国');
-  addItineraryUploadRow('帰国');
+async function saveStartTime(event) {
+  event.preventDefault();
+  const id = $('departureTimeScheduleId').value, error = $('departureTimeError'), button = $('departureTimeSaveButton'); error.hidden = true; button.disabled = true;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}/start-time`, { method: 'POST', body: { startTime: $('quickDepartureTime').value } }); closeModal('departureTimeModal'); await loadData(false); toast('開始時間を更新しました。'); }
+  catch (e) { error.textContent = e.message; error.hidden = false; } finally { button.disabled = false; }
 }
-function itineraryFiles(direction) {
-  const container = direction === '入国' ? $('arrivalItineraryRows') : $('departureItineraryRows');
-  return qsa('.itinerary-file', container).flatMap((input) => [...(input.files || [])]);
+
+function collectLocationRows() {
+  return qsa('.store-row', $('storeRows')).map((row) => ({ organizationId: qs('.store-company', row).value, locationId: qs('.store-store', row).value, note: qs('.store-note', row).value.trim() })).filter((row) => row.organizationId || row.locationId || row.note);
 }
-function directionOnlyFlights(flights, direction) {
-  return (flights || []).map(normalizeFlightDirection).filter((f) => f.direction === direction);
+function selectedChoiceValues(containerId) { try { return JSON.parse($(containerId).dataset.selected || '[]'); } catch { return []; } }
+async function uploadSelectedFiles(scheduleId, type) {
+  const errors = [], general = $('generalAttachments') ? [...$('generalAttachments').files] : [];
+  for (const file of general) { const form = new FormData(); form.append('file', file); try { await api(`/api/schedules/${encodeURIComponent(scheduleId)}/files?category=attachment`, { method: 'POST', body: form }); } catch (e) { errors.push(`${file.name}: ${e.message}`); } }
+  errors.push(...await uploadExtensionFiles(type, scheduleId)); return errors;
 }
-function mergeParsedFlightsForDirection(flights, direction) {
-  const incoming = directionOnlyFlights(flights, direction).filter((f) => f && Object.values(f).some(Boolean));
-  if (!incoming.length) return 0;
-  const rows = qsa('.flight-row', $('flightRows'));
-  const relevant = rows.filter((r) => qs('.flight-direction', r).value === direction || flightRowIsBlank(r));
-  const candidates = relevant.filter((r) => !flightRowHasMeaningfulManualData(r));
-  const existing = new Map(rows.filter((r) => qs('.flight-direction', r).value === direction && flightRowHasMeaningfulManualData(r)).map((r) => [flightKey({
+
+async function saveSchedule(event) {
+  event.preventDefault(); const errorEl = $('scheduleError'), button = $('saveScheduleButton'); errorEl.hidden = true; button.disabled = true;
+  try {
+    const type = currentScheduleType();
+    const payload = {
+      id: $('scheduleId').value, date: $('scheduleDate').value, returnDate: $('returnDate').value,
+      areaId: $('scheduleRegion').value, scheduleTypeId: $('schedulePurpose').value, workflowStatus: $('workflowStatus').value, startTime: $('departureTime').value,
+      otherContent: $('otherContent').value.trim(), otherTransport: $('otherTransport').value.trim(), memo: $('scheduleMemo').value.trim(),
+      locations: type.enableOrganization === false ? [] : collectLocationRows(), assignees: selectedChoiceValues('employeeChoices'), resources: selectedChoiceValues('carChoices'), customFields: collectCustomFieldValues(), extensions: collectExtensionPayloads(type),
+    };
+    const result = await api('/api/schedules', { method: 'POST', body: payload }); const uploadErrors = await uploadSelectedFiles(result.id, type); state.selectedDate = payload.date; closeModal('scheduleModal'); await loadData(false);
+    if (uploadErrors.length) toast(`予定は保存済み。ファイル${uploadErrors.length}件だけ失敗しました。`, 4500); else toast(payload.id ? '予定を更新しました。' : '予定を登録しました。');
+  } catch (e) { errorEl.textContent = e.message; errorEl.hidden = false; } finally { button.disabled = false; }
+}
+async function deleteSchedule() {
+  const id = $('scheduleId').value; if (!id || !confirm('この予定を削除扱いにしますか？')) return;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }); closeModal('scheduleModal'); await loadData(false); toast('予定を削除しました。'); } catch (e) { toast(e.message, 3500); }
+}
+async function deleteFile(id) { if (!confirm('このファイルを削除しますか？')) return; try { await api(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadData(false); toast('ファイルを削除しました。'); } catch (e) { toast(e.message, 3500); } }
