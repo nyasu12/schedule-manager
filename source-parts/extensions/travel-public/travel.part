@@ -205,6 +205,35 @@
     })).filter((f) => Object.values(f).some(Boolean));
   }
 
+  function decorateLocationRow(row, value = {}, type) {
+    if (!typeEnabled(type) || qs('.travel-location-counts', row)) return;
+    const note = qs('.store-note', row)?.closest('label');
+    const arrival = document.createElement('label');
+    arrival.className = 'field travel-location-counts';
+    arrival.innerHTML = `到着人数<input class="travel-arrival-count" type="number" min="0" max="999" value="${Number(value.arrivalCount || 0)}">`;
+    const departure = document.createElement('label');
+    departure.className = 'field travel-location-counts';
+    departure.innerHTML = `出発人数<input class="travel-departure-count" type="number" min="0" max="999" value="${Number(value.departureCount || 0)}">`;
+    if (note) { row.insertBefore(arrival, note); row.insertBefore(departure, note); }
+    else { row.append(arrival, departure); }
+  }
+
+  function syncLocationRows(rows, type) {
+    for (const row of rows || []) {
+      if (typeEnabled(type)) decorateLocationRow(row, {}, type);
+      qsa('.travel-location-counts', row).forEach((field) => { field.hidden = !typeEnabled(type); });
+    }
+  }
+
+  function collectLocationCounts() {
+    return qsa('.store-row', $('storeRows')).map((row) => ({
+      organizationId: qs('.store-company', row)?.value || '',
+      locationId: qs('.store-store', row)?.value || '',
+      arrivalCount: Number(qs('.travel-arrival-count', row)?.value || 0),
+      departureCount: Number(qs('.travel-departure-count', row)?.value || 0),
+    })).filter((row) => row.organizationId || row.locationId || row.arrivalCount || row.departureCount);
+  }
+
   async function checkFlight(id, button) {
     button.disabled = true;
     try {
@@ -244,6 +273,8 @@
     },
     missingReasons(schedule, type) { return (type?.requireFlight && !(schedule.extensions?.travel?.flights || schedule.flights || []).length) ? ['航空便'] : []; },
     locationSuffix(schedule, type, location) { return typeEnabled(type) ? `　到着 ${Number(location.arrivalCount || 0)}名／出発 ${Number(location.departureCount || 0)}名` : ''; },
+    decorateLocationRow,
+    syncLocationRows,
     renderDetails(schedule, type) {
       if (!typeEnabled(type)) return '';
       const flights = schedule.extensions?.travel?.flights || schedule.flights || [];
@@ -253,17 +284,18 @@
       return ({ face: '顔写真', ticket: '航空券', itinerary: '旅程表', arrival_itinerary: '入国旅程表', departure_itinerary: '帰国旅程表' })[file.category] || '';
     },
     injectUi: ensureFormUi,
-    onTypeChange(type) { ensureFormUi(); $('travelExtensionForm').hidden = !typeEnabled(type); },
+    onTypeChange(type) { ensureFormUi(); $('travelExtensionForm').hidden = !typeEnabled(type); syncLocationRows(qsa('.store-row', $('storeRows')), type); },
     onFormOpen(schedule, type) {
       ensureFormUi();
       $('travelExtensionForm').hidden = !typeEnabled(type);
+      syncLocationRows(qsa('.store-row', $('storeRows')), type);
       $('flightRows').innerHTML = '';
       const flights = schedule?.extensions?.travel?.flights || schedule?.flights || [];
       flights.forEach(addFlightRow);
       resetFacePhotoUploadRows(); resetItineraryUploadRows();
       $('arrivalReadStatus').textContent = '入国旅程表を選択してください。'; $('departureReadStatus').textContent = '帰国旅程表を選択してください。';
     },
-    collectPayload(type) { return typeEnabled(type) ? { flights: collectFlightRows() } : {}; },
+    collectPayload(type) { return typeEnabled(type) ? { flights: collectFlightRows(), locationCounts: collectLocationCounts() } : {}; },
     uploadFiles,
     bindEvents() {
       ensureFormUi();
