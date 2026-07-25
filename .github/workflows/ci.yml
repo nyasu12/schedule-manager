@@ -39,3 +39,66 @@ jobs:
               print('applied', path.name)
           print('all migrations applied successfully')
           PY
+
+  fresh-install-neutrality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build fresh migration database
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          for path in sorted(Path('migrations').glob('*.sql')):
+              con.executescript(path.read_text())
+          con.commit()
+          print('fresh migration database created')
+          PY
+
+      - name: Require generic starter types
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          active = {row[0] for row in con.execute("SELECT id FROM app_purposes_v2 WHERE active=1")}
+          required = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
+          missing = required - active
+          print('active purposes:', sorted(active))
+          if missing:
+              raise SystemExit(f'missing generic starter purposes: {sorted(missing)}')
+          PY
+
+      - name: Reject active legacy domain types
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          legacy = sorted(row[0] for row in con.execute(
+              "SELECT id FROM app_purposes_v2 WHERE active=1 AND id IN ('APT','BUS','PAT','OTH')"
+          ))
+          print('active legacy purposes:', legacy)
+          if legacy:
+              raise SystemExit(f'legacy domain-specific purposes are active: {legacy}')
+          PY
+
+      - name: Reject locale-specific holiday seeds
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          rows = list(con.execute('SELECT date,name FROM app_holidays_v2 ORDER BY date'))
+          print('fresh holiday rows:', rows)
+          if rows:
+              raise SystemExit(f'fresh install contains locale-specific holidays: {rows}')
+          PY
