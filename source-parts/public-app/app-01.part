@@ -25,6 +25,8 @@ function scheduleTypeExtensions(type) {
 }
 function extensionMissingReasons(schedule, type) { return scheduleTypeExtensions(type).flatMap((extension) => extension.missingReasons?.(schedule, type) || []); }
 function extensionLocationSuffix(schedule, type, location) { return scheduleTypeExtensions(type).map((extension) => extension.locationSuffix?.(schedule, type, location) || '').join(''); }
+function decorateExtensionLocationRow(row, value, type) { for (const extension of scheduleTypeExtensions(type)) extension.decorateLocationRow?.(row, value, type); }
+function syncExtensionLocationRows(type) { for (const extension of clientExtensions.values()) extension.syncLocationRows?.(qsa('.store-row', $('storeRows')), type); }
 function renderScheduleExtensionDetails(schedule, type) { return scheduleTypeExtensions(type).map((extension) => extension.renderDetails?.(schedule, type) || '').join(''); }
 function extensionFileLabel(file) { for (const extension of clientExtensions.values()) { const label = extension.fileLabel?.(file); if (label) return label; } return ''; }
 function updateExtensionScheduleForm(type) { for (const extension of clientExtensions.values()) extension.onTypeChange?.(type); }
