@@ -22,32 +22,30 @@ function sanitizeSchedule(body) {
   const employees = Array.isArray(body.employees) ? [...new Set(body.employees.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
   const cars = Array.isArray(body.cars) ? [...new Set(body.cars.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
   const workflowStatus = ['draft','planned','confirmed','in_progress','done','cancelled'].includes(trim(body.workflowStatus, 30)) ? trim(body.workflowStatus, 30) : 'planned';
-  const flights = Array.isArray(body.flights) ? body.flights.slice(0, 30).map((x, index) => ({
-    id: trim(x.id, 80) || makeId('FLT'),
-    direction: trim(x.direction, 20),
-    sortOrder: index,
-    airlineCode: trim(x.airlineCode, 10).toUpperCase(),
-    flightNumber: trim(x.flightNumber, 30).toUpperCase(),
-    flightDate: validatedDate(x.flightDate, '航空便の搭乗日'),
-    origin: trim(x.origin, 80).toUpperCase(),
-    destination: trim(x.destination, 80).toUpperCase(),
-    scheduledDeparture: validatedTime(x.scheduledDeparture, '航空便の出発時刻'),
-    changedDeparture: validatedTime(x.changedDeparture, '航空便の変更後出発時刻'),
-    scheduledArrival: validatedTime(x.scheduledArrival, '航空便の到着時刻'),
-    changedArrival: validatedTime(x.changedArrival, '航空便の変更後到着時刻'),
-    terminal: trim(x.terminal, 80), gate: trim(x.gate, 80), status: trim(x.status, 80) || '未確認', reservationNumber: trim(x.reservationNumber, 120), lastCheckedAt: trim(x.lastCheckedAt, 50) || null, checkSource: trim(x.checkSource, 120), checkUrl: trim(x.checkUrl, 1000), checkNote: trim(x.checkNote, 1000),
-  })).filter((x) => x.flightNumber || x.airlineCode || x.flightDate || x.origin || x.destination || x.reservationNumber || x.direction) : [];
   return {
     id: trim(body.id, 100) || makeId('SCH'), date, returnDate, regionId, purposeId,
-    departureTime: validatedTime(body.departureTime, '開始時刻'), workflowStatus, otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars, flights,
+    departureTime: validatedTime(body.departureTime, '開始時刻'), workflowStatus, otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars,
   };
 }
 
 async function saveSchedule(request, env) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
+  let body;
   let s;
-  try { s = sanitizeSchedule(await readJson(request)); } catch (e) { return fail(e.message); }
+  try {
+    body = await readJson(request);
+    s = sanitizeSchedule(body);
+  } catch (e) {
+    return fail(e.message);
+  }
+  const purpose = await env.DB.prepare('SELECT enable_travel FROM app_purposes_v2 WHERE id=?').bind(s.purposeId).first();
+  if (!purpose) return fail('予定タイプが見つかりません。');
+  try {
+    s.flights = isTravelPurposeEnabled(purpose) ? sanitizeTravelFlights(body.flights) : [];
+  } catch (e) {
+    return fail(e.message);
+  }
   const statements = [
     env.DB.prepare(`INSERT INTO app_schedules_v2(id,date,return_date,region_id,purpose_id,departure_time,workflow_status,other_content,other_transport,memo,created_at,updated_at,deleted_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,NULL)
@@ -56,6 +54,5 @@ async function saveSchedule(request, env) {
     env.DB.prepare('DELETE FROM app_schedule_stores_v2 WHERE schedule_id=?').bind(s.id),
     env.DB.prepare('DELETE FROM app_schedule_employees_v2 WHERE schedule_id=?').bind(s.id),
     env.DB.prepare('DELETE FROM app_schedule_cars_v2 WHERE schedule_id=?').bind(s.id),
-    env.DB.prepare('DELETE FROM app_flights_v2 WHERE schedule_id=?').bind(s.id),
   ];
   for (const r of s.stores) statements.push(env.DB.prepare('INSERT INTO app_schedule_stores_v2(schedule_id,company_id,store_id,arrival_count,departure_count,note) VALUES(?,?,?,?,?,?)').bind(s.id, r.companyId, r.storeId, r.arrivalCount, r.departureCount, r.note));
