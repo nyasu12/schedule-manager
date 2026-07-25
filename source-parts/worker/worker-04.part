@@ -1,30 +1,42 @@
-  if (auth.response) return auth.response;
-  const spec = masterSpec[type];
-  if (!spec) return fail('設定種類が不正です。', 404);
-  if (type === 'region' || type === 'purpose') await env.DB.prepare(`UPDATE ${spec.table} SET active=0 WHERE id=?`).bind(id).run();
-  else await env.DB.prepare(`UPDATE ${spec.table} SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
-  return json({ ok: true });
-}
-
 import { validatedDate, validatedTime } from './runtime-guards.js';
 
 function sanitizeSchedule(body) {
   const date = validatedDate(body.date, '開始日', true);
-  const regionId = trim(body.regionId, 80);
-  const purposeId = trim(body.purposeId, 80);
-  if (!regionId) throw new Error('エリアを選択してください。');
-  if (!purposeId) throw new Error('予定タイプを選択してください。');
+  const areaId = trim(body.areaId ?? body.regionId, 80);
+  const scheduleTypeId = trim(body.scheduleTypeId ?? body.purposeId, 80);
+  if (!areaId) throw new Error('エリアを選択してください。');
+  if (!scheduleTypeId) throw new Error('予定タイプを選択してください。');
   const returnDate = validatedDate(body.returnDate, '終了日');
   if (returnDate && returnDate < date) throw new Error('終了日は開始日以降にしてください。');
-  const stores = Array.isArray(body.stores) ? body.stores.slice(0, 50).map((x) => ({
-    companyId: trim(x.companyId, 80), storeId: trim(x.storeId, 80), arrivalCount: Math.max(0, Math.min(999, safeInt(x.arrivalCount))), departureCount: Math.max(0, Math.min(999, safeInt(x.departureCount))), note: trim(x.note, 300),
-  })).filter((x) => x.companyId || x.storeId || x.arrivalCount || x.departureCount || x.note) : [];
-  const employees = Array.isArray(body.employees) ? [...new Set(body.employees.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
-  const cars = Array.isArray(body.cars) ? [...new Set(body.cars.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
+
+  const rawLocations = Array.isArray(body.locations) ? body.locations : (Array.isArray(body.stores) ? body.stores : []);
+  const locations = rawLocations.slice(0, 50).map((row) => ({
+    organizationId: trim(row?.organizationId ?? row?.companyId, 80),
+    locationId: trim(row?.locationId ?? row?.storeId, 80),
+    note: trim(row?.note, 300),
+  })).filter((row) => row.organizationId || row.locationId || row.note);
+
+  const rawAssignees = Array.isArray(body.assignees) ? body.assignees : body.employees;
+  const assignees = Array.isArray(rawAssignees) ? [...new Set(rawAssignees.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
+  const rawResources = Array.isArray(body.resources) ? body.resources : body.cars;
+  const resources = Array.isArray(rawResources) ? [...new Set(rawResources.map((x) => trim(x, 80)).filter(Boolean))].slice(0, 100) : [];
   const workflowStatus = ['draft','planned','confirmed','in_progress','done','cancelled'].includes(trim(body.workflowStatus, 30)) ? trim(body.workflowStatus, 30) : 'planned';
+  const startTime = validatedTime(body.startTime ?? body.departureTime, '開始時刻');
+
   return {
-    id: trim(body.id, 100) || makeId('SCH'), date, returnDate, regionId, purposeId,
-    departureTime: validatedTime(body.departureTime, '開始時刻'), workflowStatus, otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars,
+    id: trim(body.id, 100) || makeId('SCH'),
+    date,
+    returnDate,
+    areaId,
+    scheduleTypeId,
+    startTime,
+    workflowStatus,
+    otherContent: trim(body.otherContent, 1000),
+    otherTransport: trim(body.otherTransport, 500),
+    memo: trim(body.memo, 5000),
+    locations,
+    assignees,
+    resources,
   };
 }
 
@@ -32,27 +44,24 @@ async function saveSchedule(request, env) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
   let body;
-  let s;
+  let schedule;
+  let extensionPayloads;
+  let customFieldValues;
   try {
     body = await readJson(request);
-    s = sanitizeSchedule(body);
+    schedule = sanitizeSchedule(body);
+    const scheduleType = await env.DB.prepare('SELECT id FROM core_schedule_types_v1 WHERE id=?').bind(schedule.scheduleTypeId).first();
+    if (!scheduleType) return fail('予定タイプが見つかりません。');
+    extensionPayloads = await sanitizeScheduleExtensions(env, schedule.scheduleTypeId, body);
+    customFieldValues = await sanitizeCustomFieldValues(env, schedule.scheduleTypeId, body.customFields);
   } catch (e) {
-    return fail(e.message);
+    return fail(e?.message || String(e));
   }
-  const purpose = await env.DB.prepare('SELECT enable_travel FROM app_purposes_v2 WHERE id=?').bind(s.purposeId).first();
-  if (!purpose) return fail('予定タイプが見つかりません。');
-  try {
-    s.flights = isTravelPurposeEnabled(purpose) ? sanitizeTravelFlights(body.flights) : [];
-  } catch (e) {
-    return fail(e.message);
-  }
-  const statements = [
-    env.DB.prepare(`INSERT INTO app_schedules_v2(id,date,return_date,region_id,purpose_id,departure_time,workflow_status,other_content,other_transport,memo,created_at,updated_at,deleted_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,NULL)
-      ON CONFLICT(id) DO UPDATE SET date=excluded.date,return_date=excluded.return_date,region_id=excluded.region_id,purpose_id=excluded.purpose_id,departure_time=excluded.departure_time,workflow_status=excluded.workflow_status,other_content=excluded.other_content,other_transport=excluded.other_transport,memo=excluded.memo,updated_at=CURRENT_TIMESTAMP,deleted_at=NULL`)
-      .bind(s.id, s.date, s.returnDate || null, s.regionId, s.purposeId, s.departureTime || null, s.workflowStatus, s.otherContent, s.otherTransport, s.memo),
-    env.DB.prepare('DELETE FROM app_schedule_stores_v2 WHERE schedule_id=?').bind(s.id),
-    env.DB.prepare('DELETE FROM app_schedule_employees_v2 WHERE schedule_id=?').bind(s.id),
-    env.DB.prepare('DELETE FROM app_schedule_cars_v2 WHERE schedule_id=?').bind(s.id),
-  ];
-  for (const r of s.stores) statements.push(env.DB.prepare('INSERT INTO app_schedule_stores_v2(schedule_id,company_id,store_id,arrival_count,departure_count,note) VALUES(?,?,?,?,?,?)').bind(s.id, r.companyId, r.storeId, r.arrivalCount, r.departureCount, r.note));
+
+  const statements = [];
+  appendCoreSchedulePersistenceStatements(env, statements, schedule);
+  appendExtensionPersistenceStatements(env, statements, schedule.id, extensionPayloads);
+  appendCustomFieldPersistenceStatements(env, statements, schedule.id, customFieldValues);
+  await env.DB.batch(statements);
+  return json({ ok: true, id: schedule.id });
+}

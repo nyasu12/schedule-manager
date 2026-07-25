@@ -1,9 +1,16 @@
-    cars: cars.map((x) => ({ id: x.id, name: x.name, regionId: x.region_id, active: !!x.active })),
+    cars: publicResources,
     schedules: [...bySchedule.values()].map((s) => session.role === 'time_editor' ? {
       ...s,
       memo: '',
       files: [],
       flights: (s.flights || []).map((f) => ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
+      extensions: s.extensions?.travel ? {
+        ...s.extensions,
+        travel: {
+          ...s.extensions.travel,
+          flights: (s.extensions.travel.flights || []).map((f) => ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
+        },
+      } : s.extensions,
     } : s),
     usage: {
       flight: usageMap.flight || 0,
@@ -37,51 +44,61 @@ function logout() {
   return json({ ok: true }, 200, { 'set-cookie': 'schedule_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
 }
 
-function validColor(v) { return /^#[0-9a-f]{6}$/i.test(v) ? v : '#1769df'; }
-const masterSpec = {
-  region: { table: 'app_regions_v2', prefix: 'REG' },
-  purpose: { table: 'app_purposes_v2', prefix: 'PUR' },
-  company: { table: 'app_companies_v2', prefix: 'COM' },
-  store: { table: 'app_stores_v2', prefix: 'ST' },
-  employee: { table: 'app_employees_v2', prefix: 'EMP' },
-  car: { table: 'app_cars_v2', prefix: 'RES' },
-};
-
 async function saveMaster(request, env, type) {
   const auth = await requireRole(request, env, ['admin']);
   if (auth.response) return auth.response;
-  const spec = masterSpec[type];
-  if (!spec) return fail('設定種類が不正です。', 404);
   const body = await readJson(request);
-  const id = trim(body.id, 80) || makeId(spec.prefix);
-  const name = trim(body.name, 200);
-  if (!name) return fail('名称を入力してください。');
-  if (type === 'region') {
-    const sortOrder = Math.max(0, Math.min(9999, safeInt(body.sortOrder, 0)));
-    await env.DB.prepare(`INSERT INTO app_regions_v2(id,name,sort_order,active) VALUES(?,?,?,1)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,active=1`)
-      .bind(id, name, sortOrder).run();
-  } else if (type === 'purpose') {
-    const sortOrder = Math.max(0, Math.min(9999, safeInt(body.sortOrder, 0)));
-    await env.DB.prepare(`INSERT INTO app_purposes_v2(id,name,sort_order,active,enable_travel,require_flight,require_time,require_assignee,require_resource,enable_organization)
-      VALUES(?,?,?,1,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,active=1,enable_travel=excluded.enable_travel,require_flight=excluded.require_flight,require_time=excluded.require_time,require_assignee=excluded.require_assignee,require_resource=excluded.require_resource,enable_organization=excluded.enable_organization`)
-      .bind(id, name, sortOrder, body.enableTravel ? 1 : 0, body.requireFlight ? 1 : 0, body.requireTime ? 1 : 0, body.requireAssignee ? 1 : 0, body.requireResource ? 1 : 0, body.enableOrganization === false ? 0 : 1).run();
-  } else if (type === 'company') {
-    await env.DB.prepare(`INSERT INTO app_companies_v2(id,code,name,color,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET code=excluded.code,name=excluded.name,color=excluded.color,active=1,updated_at=CURRENT_TIMESTAMP`)
-      .bind(id, trim(body.code, 60), name, validColor(trim(body.color, 20))).run();
-  } else if (type === 'store') {
-    await env.DB.prepare(`INSERT INTO app_stores_v2(id,company_id,code,name,active,updated_at) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET company_id=excluded.company_id,code=excluded.code,name=excluded.name,active=1,updated_at=CURRENT_TIMESTAMP`)
-      .bind(id, trim(body.companyId, 80), trim(body.code, 60), name).run();
-  } else {
-    await env.DB.prepare(`INSERT INTO ${spec.table}(id,name,region_id,active,updated_at) VALUES(?,?,?,1,CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,region_id=excluded.region_id,active=1,updated_at=CURRENT_TIMESTAMP`)
-      .bind(id, name, trim(body.regionId, 80)).run();
+  let saved;
+  try {
+    saved = await saveCoreMasterRecord(env, type, body);
+    if (saved.kind === 'scheduleType') {
+      const requested = Array.isArray(body.extensions)
+        ? body.extensions
+        : [{ id: 'travel', enabled: body.enableTravel === true, config: { requireFlight: body.requireFlight === true } }];
+      await savePurposeExtensions(env, saved.id, requested);
+    }
+  } catch (e) {
+    const status = canonicalMasterType(type) ? 400 : 404;
+    return fail(e?.message || String(e), status);
   }
-  return json({ ok: true, id });
+  return json({ ok: true, id: saved.id, type: saved.kind });
 }
 
 async function deactivateMaster(request, env, type, id) {
   const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  try {
+    await deactivateCoreMasterRecord(env, type, id);
+  } catch (e) {
+    return fail(e?.message || String(e), canonicalMasterType(type) ? 400 : 404);
+  }
+  return json({ ok: true });
+}
+
+async function updateSettings(request, env) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  try {
+    return json({ ok: true, settings: await saveAppSettings(env, await readJson(request)) });
+  } catch (e) {
+    return fail(e?.message || String(e));
+  }
+}
+
+async function saveCustomField(request, env) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  try {
+    const id = await saveCustomFieldDefinition(env, await readJson(request), makeId);
+    return json({ ok: true, id });
+  } catch (e) {
+    return fail(e?.message || String(e));
+  }
+}
+
+async function deactivateCustomField(request, env, id) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  await deactivateCustomFieldDefinition(env, id);
+  return json({ ok: true });
+}

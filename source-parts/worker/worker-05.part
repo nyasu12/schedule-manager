@@ -1,16 +1,9 @@
-  for (const id of s.employees) statements.push(env.DB.prepare('INSERT INTO app_schedule_employees_v2(schedule_id,employee_id) VALUES(?,?)').bind(s.id, id));
-  for (const id of s.cars) statements.push(env.DB.prepare('INSERT INTO app_schedule_cars_v2(schedule_id,car_id) VALUES(?,?)').bind(s.id, id));
-  appendTravelPersistenceStatements(env, statements, s.id, s.flights);
-  await env.DB.batch(statements);
-  return json({ ok: true, id: s.id });
-}
-
 import { detectFileType, fileExtensionMatchesType } from './runtime-guards.js';
 
 async function deleteSchedule(request, env, id) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
-  await env.DB.prepare('UPDATE app_schedules_v2 SET deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(id).run();
+  await softDeleteCoreSchedule(env, id);
   return json({ ok: true });
 }
 
@@ -18,23 +11,22 @@ async function updateDepartureTime(request, env, id) {
   const auth = await requireRole(request, env, ['time_editor','manager','admin']);
   if (auth.response) return auth.response;
   const body = await readJson(request);
-  const departureTime = normalizeTime(body.departureTime);
-  if (body.departureTime && !departureTime) return fail('開始時間は00:00〜23:59で入力してください。');
-  const exists = await env.DB.prepare('SELECT id FROM app_schedules_v2 WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  const raw = body.startTime ?? body.departureTime;
+  const startTime = normalizeTime(raw);
+  if (raw && !startTime) return fail('開始時間は00:00〜23:59で入力してください。');
+  const exists = await updateCoreScheduleStartTime(env, id, startTime);
   if (!exists) return fail('予定が見つかりません。', 404);
-  await env.DB.prepare('UPDATE app_schedules_v2 SET departure_time=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(departureTime, id).run();
-  return json({ ok: true, id, departureTime });
+  return json({ ok: true, id, startTime, departureTime: startTime });
 }
 
 const allowedExt = new Set(['pdf','jpg','jpeg','png','webp','gif','heic','heif']);
 function extension(name) { return name.includes('.') ? name.split('.').pop().toLowerCase() : ''; }
-function fileCategory(value) { return ['attachment','face','ticket','itinerary','arrival_itinerary','departure_itinerary'].includes(value) ? value : ''; }
 async function uploadFile(request, env, scheduleId, url) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
-  const category = fileCategory(url.searchParams.get('category'));
+  const category = normalizeFileCategory(url.searchParams.get('category'));
   if (!category) return fail('ファイル区分が不正です。');
-  const exists = await env.DB.prepare('SELECT id FROM app_schedules_v2 WHERE id=? AND deleted_at IS NULL').bind(scheduleId).first();
+  const exists = await env.DB.prepare('SELECT id FROM core_schedules_v1 WHERE id=? AND deleted_at IS NULL').bind(scheduleId).first();
   if (!exists) return fail('予定が見つかりません。', 404);
   const form = await request.formData();
   const file = form.get('file');
@@ -75,3 +67,8 @@ async function deleteFile(request, env, id) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
   const row = await env.DB.prepare('SELECT r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('ファイルが見つかりません。', 404);
+  await env.FILES.delete(row.r2_key);
+  await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+  return json({ ok: true });
+}

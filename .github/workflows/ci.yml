@@ -23,8 +23,41 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Rebuild and check JavaScript
-        run: npm run check
+      - name: Check public repository safety
+        run: npm run check:public
+
+      - name: Check platform architecture boundaries
+        run: npm run check:architecture
+
+      - name: Build Worker
+        run: npm run build
+
+      - name: Check Worker syntax
+        run: node --check src/index.js
+
+      - name: Check browser Core base syntax
+        run: node --check public/core/01-base.js
+
+      - name: Check browser Core render syntax
+        run: node --check public/core/02-render.js
+
+      - name: Check browser Core form syntax
+        run: node --check public/core/03-form.js
+
+      - name: Check browser Core settings syntax
+        run: node --check public/core/04-settings.js
+
+      - name: Check browser Travel extension syntax
+        run: node --check public/extensions/travel.js
+
+      - name: Check browser Core init syntax
+        run: node --check public/core/05-init.js
+
+      - name: Run Core runtime regression tests
+        run: npm run test:runtime
+
+      - name: Run Travel extension regression tests
+        run: npm run test:travel
 
       - name: Validate migrations on a fresh database
         shell: bash
@@ -97,18 +130,43 @@ jobs:
           import sqlite3
 
           con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
-          travel = con.execute(
-              "SELECT active,enable_travel FROM app_purposes_v2 WHERE id='TRAVEL'"
-          ).fetchone()
-          active_extensions = sorted(row[0] for row in con.execute(
-              'SELECT id FROM app_purposes_v2 WHERE active=1 AND enable_travel=1'
-          ))
-          print('Travel template state:', travel)
-          print('active optional extensions:', active_extensions)
+          travel = con.execute("SELECT active,enable_travel FROM app_purposes_v2 WHERE id='TRAVEL'").fetchone()
+          active_extensions = sorted(row[0] for row in con.execute('SELECT id FROM app_purposes_v2 WHERE active=1 AND enable_travel=1'))
+          registry = con.execute("SELECT installed FROM app_extensions_v1 WHERE id='travel'").fetchone()
+          mapping = con.execute("SELECT enabled FROM app_purpose_extensions_v1 WHERE purpose_id='TRAVEL' AND extension_id='travel'").fetchone()
+          print('Travel template state:', travel, 'registry:', registry, 'mapping:', mapping)
           if travel != (0, 1):
-              raise SystemExit(f'Travel must exist as a disabled extension template: {travel}')
+              raise SystemExit(f'Travel must exist as a disabled schedule-type template: {travel}')
           if active_extensions:
               raise SystemExit(f'optional domain extensions are active by default: {active_extensions}')
+          if registry != (1,) or mapping != (1,):
+              raise SystemExit('Travel extension registry template is missing')
+          PY
+
+      - name: Require canonical platform schema
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          required_objects = {
+              'core_areas_v1','core_schedule_types_v1','core_organizations_v1','core_locations_v1',
+              'core_assignees_v1','core_resources_v1','core_schedules_v1','core_schedule_locations_v1',
+              'core_schedule_assignees_v1','core_schedule_resources_v1','app_extensions_v1',
+              'app_purpose_extensions_v1','app_custom_fields_v1','app_schedule_custom_values_v1','app_settings_v1'
+          }
+          existing = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+          missing = required_objects - existing
+          if missing:
+              raise SystemExit(f'missing platform objects: {sorted(missing)}')
+          settings = dict(con.execute('SELECT key,value FROM app_settings_v1'))
+          if settings.get('locale') != 'auto' or settings.get('timezone') != 'UTC':
+              raise SystemExit(f'unexpected neutral settings: {settings}')
+          core_types = {row[0] for row in con.execute('SELECT id FROM core_schedule_types_v1 WHERE active=1')}
+          if not {'MEETING','VISIT','TASK'}.issubset(core_types):
+              raise SystemExit(f'canonical schedule-type view is incomplete: {sorted(core_types)}')
+          print('canonical platform schema: PASS')
           PY
 
       - name: Reject locale-specific holiday seeds

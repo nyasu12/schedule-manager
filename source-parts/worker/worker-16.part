@@ -44,33 +44,51 @@
   return fail('指定日・便番号・出発地・到着地が一致する便を確認できませんでした。旅程表・登録時刻は変更していません。', 404, warnings.join(' / '));
 }
 
+function apiMasterType(value) {
+  return value === 'schedule-type' ? 'scheduleType' : value;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
     try {
       if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
-      if (path === '/api/health' && request.method === 'GET') return json({ ok: true, version: '0.4.1' });
+      if (path === '/api/health' && request.method === 'GET') return json({ ok: true, version: '0.5.0' });
       if (path === '/api/bootstrap' && request.method === 'GET') return await bootstrap(request, env);
       if (path === '/api/login' && request.method === 'POST') return await login(request, env);
       if (path === '/api/logout' && request.method === 'POST') return logout();
+      if (path === '/api/settings' && request.method === 'POST') return await updateSettings(request, env);
+      if (path === '/api/custom-fields' && request.method === 'POST') return await saveCustomField(request, env);
+      let match = path.match(/^\/api\/custom-fields\/([^/]+)$/);
+      if (match && request.method === 'DELETE') return await deactivateCustomField(request, env, decodeURIComponent(match[1]));
+
+      // Optional Travel extension routes. Core scheduling does not require these APIs.
       if (path === '/api/ocr/preview' && request.method === 'POST') return await previewTravelDocument(request, env);
+      if (path === '/api/extensions/travel/ocr/preview' && request.method === 'POST') return await previewTravelDocument(request, env);
+
       if (path === '/api/schedules' && request.method === 'POST') return await saveSchedule(request, env);
-      let match = path.match(/^\/api\/schedules\/([^/]+)\/departure-time$/);
+      match = path.match(/^\/api\/schedules\/([^/]+)\/start-time$/);
+      if (match && request.method === 'POST') return await updateDepartureTime(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/schedules\/([^/]+)\/departure-time$/);
       if (match && request.method === 'POST') return await updateDepartureTime(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/schedules\/([^/]+)$/);
       if (match && request.method === 'DELETE') return await deleteSchedule(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/schedules\/([^/]+)\/files$/);
       if (match && request.method === 'POST') return await uploadFile(request, env, decodeURIComponent(match[1]), url);
-      match = path.match(/^\/api\/master\/(region|purpose|company|store|employee|car)$/);
-      if (match && request.method === 'POST') return await saveMaster(request, env, match[1]);
-      match = path.match(/^\/api\/master\/(region|purpose|company|store|employee|car)\/([^/]+)$/);
-      if (match && request.method === 'DELETE') return await deactivateMaster(request, env, match[1], decodeURIComponent(match[2]));
+
+      match = path.match(/^\/api\/master\/(area|schedule-type|organization|location|assignee|resource|region|purpose|company|store|employee|car)$/);
+      if (match && request.method === 'POST') return await saveMaster(request, env, apiMasterType(match[1]));
+      match = path.match(/^\/api\/master\/(area|schedule-type|organization|location|assignee|resource|region|purpose|company|store|employee|car)\/([^/]+)$/);
+      if (match && request.method === 'DELETE') return await deactivateMaster(request, env, apiMasterType(match[1]), decodeURIComponent(match[2]));
+
       match = path.match(/^\/api\/files\/([^/]+)\/ocr$/);
       if (match && request.method === 'POST') return await runVision(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/files\/([^/]+)$/);
       if (match && request.method === 'DELETE') return await deleteFile(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/flights\/([^/]+)\/check$/);
+      if (match && request.method === 'POST') return await checkFlight(request, env, decodeURIComponent(match[1]));
+      match = path.match(/^\/api\/extensions\/travel\/flights\/([^/]+)\/check$/);
       if (match && request.method === 'POST') return await checkFlight(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/files\/([^/]+)$/);
       if (match && request.method === 'GET') return await serveFile(request, env, decodeURIComponent(match[1]));

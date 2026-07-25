@@ -1,0 +1,316 @@
+// Optional Travel browser extension. Core UI communicates with this module only through clientExtensions.
+(function registerTravelExtension() {
+  const ID = 'travel';
+  const ARRIVAL = '入国';
+  const DEPARTURE = '帰国';
+
+  function typeEnabled(type) {
+    return Boolean(type?.extensions?.some((row) => row?.id === ID) || type?.enableTravel);
+  }
+
+  function ensureFormUi() {
+    const host = $('extensionFormSections');
+    if (!host || $('travelExtensionForm')) return;
+    host.insertAdjacentHTML('beforeend', `
+      <div id="travelExtensionForm" hidden>
+        <section class="form-section" id="flightSection">
+          <div class="section-title"><h3>Travel：航空便</h3><div><span class="optional-pill">拡張機能</span> <button type="button" class="btn small" id="addFlightRow">＋ 便を追加</button></div></div>
+          <p class="hint" id="flightHint">Travel拡張を有効にした予定タイプだけで利用できます。</p>
+          <div class="dynamic-list" id="flightRows"></div>
+        </section>
+        <section class="form-section" id="travelDocumentsSection">
+          <div class="section-title"><h3>Travel：写真・旅程表</h3><span class="optional-pill">拡張機能</span></div>
+          <p class="hint">空港送迎など、旅程表OCRやフライト確認が必要な業務向けの追加機能です。</p>
+          <div class="face-panel">
+            <div class="itinerary-head"><div><strong>顔写真</strong><small>必要な場合のみ追加できます</small></div><button type="button" class="btn small" id="addFacePhoto">＋ 顔写真を追加</button></div>
+            <div class="face-upload-list" id="facePhotoRows"></div>
+          </div>
+          <div class="itinerary-panel arrival-panel">
+            <div class="itinerary-head"><div><strong>入国旅程表</strong><small>入国方向の便だけを抽出</small></div><button type="button" class="btn small" id="addArrivalItinerary">＋ 旅程表を追加</button></div>
+            <div class="itinerary-upload-list" id="arrivalItineraryRows"></div>
+            <div class="auto-read-box compact"><div><p id="arrivalReadStatus">入国旅程表を選択してください。</p><small>複数ファイルをまとめて解析できます。</small></div><button type="button" class="btn primary" id="readArrivalItinerary">入国だけ読み取って反映</button></div>
+          </div>
+          <div class="itinerary-panel departure-panel">
+            <div class="itinerary-head"><div><strong>帰国旅程表</strong><small>帰国方向の便だけを抽出</small></div><button type="button" class="btn small" id="addDepartureItinerary">＋ 旅程表を追加</button></div>
+            <div class="itinerary-upload-list" id="departureItineraryRows"></div>
+            <div class="auto-read-box compact"><div><p id="departureReadStatus">帰国旅程表を選択してください。</p><small>往復が1枚に含まれていても帰国方向だけ反映します。</small></div><button type="button" class="btn primary" id="readDepartureItinerary">帰国だけ読み取って反映</button></div>
+          </div>
+        </section>
+      </div>`);
+  }
+
+  function formatTravelTimestamp(value) {
+    if (!value) return '';
+    let raw = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?$/.test(raw)) raw = raw.replace(' ', 'T') + (raw.length === 16 ? ':00Z' : 'Z');
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return String(value);
+    const timezone = state.data.settings?.timezone || 'UTC';
+    return new Intl.DateTimeFormat(state.data.settings?.locale === 'en' ? 'en' : 'ja-JP', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(d);
+  }
+
+  function flightSummary(f) {
+    const ident = [f.airlineCode, f.flightNumber].filter(Boolean).join('') || '便名 未入力';
+    const route = [f.origin, f.destination].filter(Boolean).join(' → ');
+    const times = [f.scheduledDeparture, f.scheduledArrival].filter(Boolean).join(' → ');
+    return [ident, route, times].filter(Boolean).join('　');
+  }
+
+  function flightDetailBox(f) {
+    const originalTimes = [f.scheduledDeparture, f.scheduledArrival].filter(Boolean).join(' → ');
+    const latestTimes = [f.changedDeparture, f.changedArrival].filter(Boolean).join(' → ');
+    const sourceUrl = /^https?:\/\//i.test(f.checkUrl || '') ? f.checkUrl : '';
+    const source = f.checkSource ? (sourceUrl ? `<a class="file-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(f.checkSource)}</a>` : escapeHtml(f.checkSource)) : '';
+    return `<div class="flight-box"><div class="flight-head"><strong>${escapeHtml(f.direction || '航空便')} ${escapeHtml(flightSummary(f))}</strong><span>${escapeHtml(f.status || '未確認')}</span></div>${f.flightDate ? `<div>搭乗日：${escapeHtml(f.flightDate)}</div>` : ''}${originalTimes ? `<div><b>旅程表・登録時刻：</b>${escapeHtml(originalTimes)}</div>` : ''}${latestTimes ? `<div><b>最新確認：</b>${escapeHtml(latestTimes)}</div>` : ''}${f.reservationNumber ? `<div>予約番号：${escapeHtml(f.reservationNumber)}</div>` : ''}${f.terminal || f.gate ? `<div>ターミナル：${escapeHtml(f.terminal || '—')}　ゲート：${escapeHtml(f.gate || '—')}</div>` : ''}${source ? `<div><b>確認元：</b>${source}</div>` : ''}${f.checkNote ? `<div class="flight-check-note">${escapeHtml(f.checkNote)}</div>` : ''}${f.lastCheckedAt ? `<small>最終確認：${escapeHtml(formatTravelTimestamp(f.lastCheckedAt))}</small>` : ''}${isEditor() ? `<div class="flight-actions"><button type="button" class="btn small" data-travel-check-flight="${escapeHtml(f.id)}">この便を確認</button></div>` : ''}</div>`;
+  }
+
+  function addFlightRow(value = {}) {
+    ensureFormUi();
+    const row = document.createElement('div');
+    row.className = 'dynamic-row flight-row';
+    row.dataset.id = value.id || '';
+    row.dataset.changedDeparture = value.changedDeparture || '';
+    row.dataset.changedArrival = value.changedArrival || '';
+    row.dataset.status = value.status || '未確認';
+    row.dataset.lastCheckedAt = value.lastCheckedAt || '';
+    row.dataset.checkSource = value.checkSource || '';
+    row.dataset.checkUrl = value.checkUrl || '';
+    row.dataset.checkNote = value.checkNote || '';
+    row.innerHTML = `<label class="field">方向<select class="flight-direction"><option value="">未選択</option><option value="入国">入国</option><option value="帰国">帰国</option><option value="その他">その他</option></select></label><label class="field">航空会社コード<input class="flight-airline" maxlength="10" placeholder="JL" value="${escapeHtml(value.airlineCode || '')}"></label><label class="field">便名・番号<input class="flight-number" maxlength="30" placeholder="JL123" value="${escapeHtml(value.flightNumber || '')}"></label><label class="field">搭乗日<input class="flight-date" type="date" value="${escapeHtml(value.flightDate || '')}"></label><label class="field">出発地<input class="flight-origin" maxlength="80" placeholder="HND" value="${escapeHtml(value.origin || '')}"></label><label class="field">到着地<input class="flight-destination" maxlength="80" placeholder="KIX" value="${escapeHtml(value.destination || '')}"></label><label class="field">予定出発<input class="flight-depart" type="time" value="${escapeHtml(value.scheduledDeparture || '')}"></label><label class="field">予定到着<input class="flight-arrive" type="time" value="${escapeHtml(value.scheduledArrival || '')}"></label><label class="field wide">予約番号<input class="flight-reservation" maxlength="120" value="${escapeHtml(value.reservationNumber || '')}"></label><label class="field">ターミナル<input class="flight-terminal" maxlength="80" value="${escapeHtml(value.terminal || '')}"></label><label class="field">ゲート<input class="flight-gate" maxlength="80" value="${escapeHtml(value.gate || '')}"></label><button type="button" class="btn small danger row-remove">削除</button>`;
+    qs('.flight-direction', row).value = value.direction || '';
+    qs('.row-remove', row).addEventListener('click', () => row.remove());
+    $('flightRows').appendChild(row);
+  }
+
+  function airportCountry(value) {
+    const raw = String(value || '').toUpperCase();
+    const jp = new Set(['NRT','HND','FKS','KIX','ITM','NGO','CTS','FUK','OKA','SDJ','HIJ','KOJ','KMQ','NKM','IBR','UKB','TAK','MYJ','KCZ','OIT','KMJ','NGS','MMB','AKJ','AOJ','GAJ','KIJ','TOY','FSZ','SHB','HKD','KUH','OKJ','YGJ','IZO','TKS','UBJ','KKJ','HSG','KMI','ASJ','ISG','MMY']);
+    const ph = new Set(['MNL','CEB','CRK','DVO','KLO','ILO','PPS','TAC','BCD','MPH','CGY','GES','ZAM','LAO','TAG','DGT','BXU','CBO','OZC','SUG','TUG','VRC','USU']);
+    const codes = raw.match(/\b[A-Z]{3}\b/g) || [];
+    if (codes.some((x) => jp.has(x)) || /(JAPAN|TOKYO|NARITA|HANEDA|FUKUSHIMA|OSAKA|KANSAI|日本|東京|成田|羽田|福島|大阪|関西)/i.test(raw)) return 'JP';
+    if (codes.some((x) => ph.has(x)) || /(PHILIPPINES|MANILA|CEBU|CLARK|DAVAO|フィリピン|マニラ|セブ|クラーク|ダバオ)/i.test(raw)) return 'PH';
+    return '';
+  }
+
+  function normalizeFlightDirection(value) {
+    const f = { ...value };
+    const origin = airportCountry(f.origin), destination = airportCountry(f.destination);
+    if (origin === 'PH' && destination === 'JP') f.direction = ARRIVAL;
+    else if (origin === 'JP' && destination === 'PH') f.direction = DEPARTURE;
+    else if (destination === 'JP' && origin !== 'JP') f.direction = ARRIVAL;
+    else if (origin === 'JP' && destination !== 'JP') f.direction = DEPARTURE;
+    return f;
+  }
+
+  function flightRowIsBlank(row) {
+    return !['.flight-airline','.flight-number','.flight-date','.flight-origin','.flight-destination','.flight-depart','.flight-arrive','.flight-reservation','.flight-terminal','.flight-gate']
+      .some((sel) => (qs(sel, row)?.value || '').trim()) && !qs('.flight-direction', row)?.value;
+  }
+  function flightRowHasMeaningfulManualData(row) {
+    return ['.flight-airline','.flight-number','.flight-origin','.flight-destination','.flight-depart','.flight-arrive','.flight-reservation','.flight-terminal','.flight-gate']
+      .some((sel) => (qs(sel, row)?.value || '').trim());
+  }
+  function flightKey(value) { return `${String(value.airlineCode || '').toUpperCase()}|${String(value.flightNumber || '').toUpperCase()}|${value.flightDate || ''}`; }
+  function applyFlightToRow(row, value, overwrite = false) {
+    value = normalizeFlightDirection(value);
+    const set = (sel, v) => { const el = qs(sel, row); if (el && v && (overwrite || !el.value)) el.value = v; };
+    set('.flight-direction', value.direction); set('.flight-airline', value.airlineCode); set('.flight-number', value.flightNumber); set('.flight-date', value.flightDate);
+    set('.flight-origin', value.origin); set('.flight-destination', value.destination); set('.flight-depart', value.scheduledDeparture); set('.flight-arrive', value.scheduledArrival);
+    set('.flight-reservation', value.reservationNumber); set('.flight-terminal', value.terminal); set('.flight-gate', value.gate);
+  }
+
+  function directionOnlyFlights(flights, direction) { return (flights || []).map(normalizeFlightDirection).filter((f) => f.direction === direction); }
+  function mergeParsedFlightsForDirection(flights, direction) {
+    const incoming = directionOnlyFlights(flights, direction).filter((f) => f && Object.values(f).some(Boolean));
+    if (!incoming.length) return 0;
+    const rows = qsa('.flight-row', $('flightRows'));
+    const relevant = rows.filter((r) => qs('.flight-direction', r).value === direction || flightRowIsBlank(r));
+    const candidates = relevant.filter((r) => !flightRowHasMeaningfulManualData(r));
+    const existing = new Map(rows.filter((r) => qs('.flight-direction', r).value === direction && flightRowHasMeaningfulManualData(r)).map((r) => [flightKey({ airlineCode: qs('.flight-airline', r).value, flightNumber: qs('.flight-number', r).value, flightDate: qs('.flight-date', r).value }), r]));
+    let reflected = 0;
+    incoming.forEach((raw, index) => {
+      const f = { ...normalizeFlightDirection(raw), direction };
+      const key = flightKey(f);
+      if (existing.has(key) && key !== '||') applyFlightToRow(existing.get(key), f, true);
+      else if (candidates[index]) { applyFlightToRow(candidates[index], f, true); qs('.flight-direction', candidates[index]).value = direction; existing.set(key, candidates[index]); }
+      else { addFlightRow({ ...f, direction }); existing.set(key, $('flightRows').lastElementChild); }
+      reflected += 1;
+    });
+    return reflected;
+  }
+
+  function addFacePhotoUploadRow() {
+    const container = $('facePhotoRows');
+    const row = document.createElement('div');
+    row.className = 'face-upload-row';
+    row.innerHTML = `<label class="field">顔写真<input class="face-photo-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.gif,.heic,.heif"></label><button type="button" class="btn small danger row-remove">削除</button>`;
+    qs('.row-remove', row).addEventListener('click', () => { const rows = qsa('.face-upload-row', container); if (rows.length <= 1) qs('.face-photo-file', row).value = ''; else row.remove(); });
+    container.appendChild(row);
+  }
+  function resetFacePhotoUploadRows() { $('facePhotoRows').innerHTML = ''; addFacePhotoUploadRow(); }
+  function facePhotoFiles() { return qsa('.face-photo-file', $('facePhotoRows')).flatMap((input) => [...(input.files || [])]); }
+  function addItineraryUploadRow(direction) {
+    const container = direction === ARRIVAL ? $('arrivalItineraryRows') : $('departureItineraryRows');
+    const row = document.createElement('div');
+    row.className = 'itinerary-upload-row'; row.dataset.direction = direction;
+    row.innerHTML = `<label class="field">${direction}旅程表<input class="itinerary-file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.gif"></label><button type="button" class="btn small danger row-remove">削除</button>`;
+    qs('.row-remove', row).addEventListener('click', () => { const rows = qsa('.itinerary-upload-row', container); if (rows.length <= 1) qs('.itinerary-file', row).value = ''; else row.remove(); });
+    container.appendChild(row);
+  }
+  function resetItineraryUploadRows() { $('arrivalItineraryRows').innerHTML = ''; $('departureItineraryRows').innerHTML = ''; addItineraryUploadRow(ARRIVAL); addItineraryUploadRow(DEPARTURE); }
+  function itineraryFiles(direction) { const container = direction === ARRIVAL ? $('arrivalItineraryRows') : $('departureItineraryRows'); return qsa('.itinerary-file', container).flatMap((input) => [...(input.files || [])]); }
+
+  async function autoReadItineraryDirection(direction) {
+    const button = direction === ARRIVAL ? $('readArrivalItinerary') : $('readDepartureItinerary');
+    const status = direction === ARRIVAL ? $('arrivalReadStatus') : $('departureReadStatus');
+    const files = itineraryFiles(direction);
+    if (!files.length) { toast(`${direction}旅程表のPDF・画像を先に選択してください。`, 3500); return; }
+    button.disabled = true;
+    const parsedFlights = [], failures = [], warnings = [], parserKinds = new Set();
+    let visionUsed = state.data.usage?.vision || 0, openaiUsed = state.data.usage?.openai || 0;
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        const file = files[i]; status.textContent = `${i + 1}/${files.length} ${file.name} を ${direction}旅程表として解析中…`;
+        const form = new FormData(); form.append('file', file); form.append('targetDirection', direction);
+        try {
+          const result = await api('/api/extensions/travel/ocr/preview', { method: 'POST', body: form });
+          parsedFlights.push(...directionOnlyFlights(result.parsed?.flights || [], direction));
+          if (result.parser) parserKinds.add(result.parser);
+          if (result.aiWarning) warnings.push(`${file.name}: ${result.aiWarning}`);
+          if (Number.isFinite(Number(result.used))) visionUsed = Number(result.used);
+          if (Number.isFinite(Number(result.openai?.used))) openaiUsed = Number(result.openai.used);
+        } catch (e) { failures.push(`${file.name}: ${e.message}`); }
+      }
+      if (state.data.usage) { state.data.usage.vision = visionUsed; state.data.usage.openai = openaiUsed; }
+      renderSession();
+      const added = mergeParsedFlightsForDirection(parsedFlights, direction);
+      if (parsedFlights.length) {
+        const summary = parsedFlights.slice(0, 4).map((f) => `${f.airlineCode || ''}${f.flightNumber || ''} ${f.origin || '?'}→${f.destination || '?'}`).join(' / ');
+        status.textContent = `${direction} ${parsedFlights.length}便を${parserKinds.has('openai') ? 'OpenAIで解析して' : '解析して'}、航空便欄へ${added}件反映しました。${summary}`;
+      } else if (failures.length) status.textContent = `読み取り処理が失敗しました：${String(failures[0]).slice(0, 320)}`;
+      else status.textContent = `${direction}旅程表から${direction}便を抽出できませんでした。`;
+      if (warnings.length) status.textContent += ` AI解析の注意：${String(warnings[0]).slice(0, 240)}`;
+      return added;
+    } finally { button.disabled = false; }
+  }
+
+  function collectFlightRows() {
+    return qsa('.flight-row', $('flightRows')).map((r) => ({
+      id: r.dataset.id || '', direction: qs('.flight-direction', r).value, airlineCode: qs('.flight-airline', r).value.trim(), flightNumber: qs('.flight-number', r).value.trim(), flightDate: qs('.flight-date', r).value,
+      origin: qs('.flight-origin', r).value.trim(), destination: qs('.flight-destination', r).value.trim(), scheduledDeparture: qs('.flight-depart', r).value, changedDeparture: r.dataset.changedDeparture || '', scheduledArrival: qs('.flight-arrive', r).value, changedArrival: r.dataset.changedArrival || '',
+      reservationNumber: qs('.flight-reservation', r).value.trim(), terminal: qs('.flight-terminal', r).value.trim(), gate: qs('.flight-gate', r).value.trim(), status: r.dataset.status || '未確認', lastCheckedAt: r.dataset.lastCheckedAt || '', checkSource: r.dataset.checkSource || '', checkUrl: r.dataset.checkUrl || '', checkNote: r.dataset.checkNote || '',
+    })).filter((f) => Object.values(f).some(Boolean));
+  }
+
+  function decorateLocationRow(row, value = {}, type) {
+    if (!typeEnabled(type) || qs('.travel-location-counts', row)) return;
+    const note = qs('.store-note', row)?.closest('label');
+    const arrival = document.createElement('label');
+    arrival.className = 'field travel-location-counts';
+    arrival.innerHTML = `到着人数<input class="travel-arrival-count" type="number" min="0" max="999" value="${Number(value.arrivalCount || 0)}">`;
+    const departure = document.createElement('label');
+    departure.className = 'field travel-location-counts';
+    departure.innerHTML = `出発人数<input class="travel-departure-count" type="number" min="0" max="999" value="${Number(value.departureCount || 0)}">`;
+    if (note) { row.insertBefore(arrival, note); row.insertBefore(departure, note); }
+    else { row.append(arrival, departure); }
+  }
+
+  function syncLocationRows(rows, type) {
+    for (const row of rows || []) {
+      if (typeEnabled(type)) decorateLocationRow(row, {}, type);
+      qsa('.travel-location-counts', row).forEach((field) => { field.hidden = !typeEnabled(type); });
+    }
+  }
+
+  function collectLocationCounts() {
+    return qsa('.store-row', $('storeRows')).map((row) => ({
+      organizationId: qs('.store-company', row)?.value || '',
+      locationId: qs('.store-store', row)?.value || '',
+      arrivalCount: Number(qs('.travel-arrival-count', row)?.value || 0),
+      departureCount: Number(qs('.travel-departure-count', row)?.value || 0),
+    })).filter((row) => row.organizationId || row.locationId || row.arrivalCount || row.departureCount);
+  }
+
+  async function checkFlight(id, button) {
+    button.disabled = true;
+    try {
+      const result = await api(`/api/extensions/travel/flights/${encodeURIComponent(id)}/check`, { method: 'POST' });
+      await loadData(false);
+      const label = result?.matchType === 'possible_change' ? '便変更の可能性あり' : (result?.source || '便情報');
+      toast(result?.requiresReview ? `${label}を反映しました。確認元リンクを目視確認してください。` : `${label}で確認しました。`, 5200);
+    } catch (e) { toast(e.message, 6500); }
+    finally { button.disabled = false; }
+  }
+
+  async function uploadFiles(scheduleId) {
+    const groups = [
+      { category: 'face', files: facePhotoFiles() },
+      { category: 'arrival_itinerary', files: itineraryFiles(ARRIVAL) },
+      { category: 'departure_itinerary', files: itineraryFiles(DEPARTURE) },
+    ];
+    const errors = [];
+    for (const group of groups) for (const file of group.files) {
+      const form = new FormData(); form.append('file', file);
+      try { await api(`/api/schedules/${encodeURIComponent(scheduleId)}/files?category=${group.category}`, { method: 'POST', body: form }); }
+      catch (e) { errors.push(`${file.name}: ${e.message}`); }
+    }
+    return errors;
+  }
+
+  registerClientExtension({
+    id: ID,
+    isEnabled: typeEnabled,
+    navigation: { mode: 'travel', label: '✈ Travel', title: 'Travel', description: 'Travel拡張を有効にした予定タイプだけを表示します。' },
+    isNavigationEnabled(data) { return (data.scheduleTypes || []).some((x) => x.active !== false && typeEnabled(x)); },
+    filterMode(mode, rows) { return mode === 'travel' ? rows.filter((s) => typeEnabled(scheduleTypeById(s.scheduleTypeId))) : rows; },
+    usageText(data) {
+      if (!(data.scheduleTypes || []).some((x) => x.active !== false && typeEnabled(x))) return '';
+      const u = data.usage || {};
+      return `Travel拡張：OCR ${u.vision || 0}/${u.visionLimit || 900}・AI ${u.openai || 0}/${u.openaiLimit || 300}・Web ${u.openaiWeb || 0}/${u.openaiWebLimit || 100}・Flight API ${u.flight || 0}/${u.flightLimit || 300}`;
+    },
+    missingReasons(schedule, type) { return (type?.requireFlight && !(schedule.extensions?.travel?.flights || schedule.flights || []).length) ? ['航空便'] : []; },
+    locationSuffix(schedule, type, location) { return typeEnabled(type) ? `　到着 ${Number(location.arrivalCount || 0)}名／出発 ${Number(location.departureCount || 0)}名` : ''; },
+    decorateLocationRow,
+    syncLocationRows,
+    renderDetails(schedule, type) {
+      if (!typeEnabled(type)) return '';
+      const flights = schedule.extensions?.travel?.flights || schedule.flights || [];
+      return flights.length ? flights.map(flightDetailBox).join('') : '<div class="flight-box">航空便：未入力</div>';
+    },
+    fileLabel(file) {
+      return ({ face: '顔写真', ticket: '航空券', itinerary: '旅程表', arrival_itinerary: '入国旅程表', departure_itinerary: '帰国旅程表' })[file.category] || '';
+    },
+    injectUi: ensureFormUi,
+    onTypeChange(type) { ensureFormUi(); $('travelExtensionForm').hidden = !typeEnabled(type); syncLocationRows(qsa('.store-row', $('storeRows')), type); },
+    onFormOpen(schedule, type) {
+      ensureFormUi();
+      $('travelExtensionForm').hidden = !typeEnabled(type);
+      syncLocationRows(qsa('.store-row', $('storeRows')), type);
+      $('flightRows').innerHTML = '';
+      const flights = schedule?.extensions?.travel?.flights || schedule?.flights || [];
+      flights.forEach(addFlightRow);
+      resetFacePhotoUploadRows(); resetItineraryUploadRows();
+      $('arrivalReadStatus').textContent = '入国旅程表を選択してください。'; $('departureReadStatus').textContent = '帰国旅程表を選択してください。';
+    },
+    collectPayload(type) { return typeEnabled(type) ? { flights: collectFlightRows(), locationCounts: collectLocationCounts() } : {}; },
+    uploadFiles,
+    bindEvents() {
+      ensureFormUi();
+      $('addFlightRow')?.addEventListener('click', () => addFlightRow({ flightDate: $('scheduleDate').value }));
+      $('addFacePhoto')?.addEventListener('click', addFacePhotoUploadRow);
+      $('addArrivalItinerary')?.addEventListener('click', () => addItineraryUploadRow(ARRIVAL));
+      $('addDepartureItinerary')?.addEventListener('click', () => addItineraryUploadRow(DEPARTURE));
+      $('readArrivalItinerary')?.addEventListener('click', () => autoReadItineraryDirection(ARRIVAL));
+      $('readDepartureItinerary')?.addEventListener('click', () => autoReadItineraryDirection(DEPARTURE));
+    },
+    bindDetailEvents(root) { qsa('[data-travel-check-flight]', root).forEach((b) => b.addEventListener('click', () => checkFlight(b.dataset.travelCheckFlight, b))); },
+    settingsFields(type) {
+      const enabled = typeEnabled(type);
+      const config = type?.extensions?.find((x) => x.id === ID)?.config || {};
+      return `<div class="settings-fields extension-settings"><label class="check-field"><input id="extensionTravelEnabled" type="checkbox" ${enabled ? 'checked' : ''}> Travel拡張を有効にする</label><label class="check-field"><input id="extensionTravelRequireFlight" type="checkbox" ${(config.requireFlight || type?.requireFlight) ? 'checked' : ''}> 航空便を必須にする</label></div>`;
+    },
+    collectSettings() { return { id: ID, enabled: Boolean($('extensionTravelEnabled')?.checked), config: { requireFlight: Boolean($('extensionTravelRequireFlight')?.checked) } }; },
+  });
+})();
