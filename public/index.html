@@ -6,7 +6,12 @@
   <meta name="theme-color" content="#10223e">
   <title>Schedule Manager</title>
   <link rel="stylesheet" href="/styles.css?v=0.5.0">
-  <script src="/app.js?v=0.5.0" defer></script>
+  <script src="/core/01-base.js?v=0.5.0" defer></script>
+  <script src="/core/02-render.js?v=0.5.0" defer></script>
+  <script src="/core/03-form.js?v=0.5.0" defer></script>
+  <script src="/core/04-settings.js?v=0.5.0" defer></script>
+  <script src="/extensions/travel.js?v=0.5.0" defer></script>
+  <script src="/core/05-init.js?v=0.5.0" defer></script>
 </head>
 <body>
 <div class="app-shell">
@@ -17,7 +22,7 @@
       <button type="button" class="nav-btn" data-mode="all">☷ 予定一覧</button>
       <button type="button" class="nav-btn" data-mode="personstore">♙ 担当者・リソース別</button>
       <button type="button" class="nav-btn" data-mode="incomplete">！ 未確定・未割当</button>
-      <span class="extension-nav-slot"></span>
+      <span class="extension-nav-slot" style="display:contents"></span>
       <button type="button" class="nav-btn admin-only" data-open-settings hidden>⚙ 設定</button>
     </nav>
     <div class="side-foot"><div id="sessionLabel">一般閲覧</div><small id="usageLabel" hidden></small></div>
@@ -59,7 +64,7 @@
       <button type="button" class="nav-btn" data-mode="all">☷ 予定一覧</button>
       <button type="button" class="nav-btn" data-mode="personstore">♙ 担当者・リソース別</button>
       <button type="button" class="nav-btn" data-mode="incomplete">！ 未確定・未割当</button>
-      <span class="extension-nav-slot"></span>
+      <span class="extension-nav-slot" style="display:contents"></span>
       <button type="button" class="nav-btn admin-only" data-open-settings hidden>⚙ 設定</button>
     </nav>
   </aside>
