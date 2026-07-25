@@ -9,17 +9,20 @@ This repository is a **public portfolio version**. Production credentials, Cloud
 ## Highlights
 
 - Configurable schedule types instead of hard-coded workflows
-- Per-type rules for required start time, assignee, resource, organization, and flight information
+- Per-type rules for required start time, assignee, resource, and organization
 - Workflow status: draft, planned, confirmed, in progress, done, or cancelled
 - Organization / location / assignee / resource allocation
 - Generic file attachments stored in Cloudflare R2
 - Unassigned and incomplete-work views
 - Role-based access for administrators, schedule editors, and start-time editors
+- Strict server-side validation for dates, times, and supported uploaded file signatures
 - Optional **Travel extension** for flights, itineraries, OCR, and operational flight checks
 
 ## Optional Travel extension
 
 Travel functionality is an extension of the scheduling platform, not a core assumption. A schedule type can enable the extension without requiring a flight, so ordinary schedules remain valid even when no airline segment is present. Flight requirements can be enabled separately for workflows such as airport transfers; the OCR and flight-verification features are intentionally specialized for air-travel operations.
+
+Travel-specific validation, persistence, and API hydration live under `src/extensions/travel/`. The generic schedule sanitizer does not parse flight fields. When a schedule is saved, the selected schedule type is checked first; Travel payloads are only parsed and persisted when that type explicitly enables the Travel extension.
 
 When enabled, the Travel extension provides:
 
@@ -39,12 +42,14 @@ Browser
   |
   v
 Cloudflare Worker
+  |-- Core: schedules, configuration, workflow state, generic attachments
   |-- D1: schedules, users, configuration, workflow state, usage counters
-  |-- R2: generic attachments and optional Travel documents
-  |-- Google Vision: optional OCR
-  |-- OpenAI: optional document parsing / official-web fallback
-  `-- FlightAware AeroAPI: optional Travel flight checks
+  |-- R2: generic attachments and optional extension documents
+  `-- Optional extensions
+      `-- Travel: OCR, flight data, itinerary parsing, operational checks
 ```
+
+Travel integrations may use Google Vision, OpenAI, and FlightAware AeroAPI. None of them are required for ordinary scheduling workflows.
 
 ## Tech stack
 
@@ -54,24 +59,28 @@ Cloudflare Worker
 | Frontend | Vanilla HTML, CSS, JavaScript |
 | Database | Cloudflare D1 (SQLite) |
 | File storage | Cloudflare R2 |
-| OCR | Google Cloud Vision API |
-| AI parsing / web fallback | OpenAI API |
-| Flight information | FlightAware AeroAPI |
+| Optional OCR | Google Cloud Vision API |
+| Optional AI parsing / web fallback | OpenAI API |
+| Optional Travel flight information | FlightAware AeroAPI |
 | Deployment | Wrangler |
 | CI | GitHub Actions |
 
 ## Source layout
 
-The application sources are committed directly so the implementation can be reviewed without a generation step.
+The two large runtime entry files are assembled deterministically from ordered source fragments. Smaller reusable modules are committed directly. This keeps the public implementation reviewable while allowing the generated Worker and browser bundles to be validated in CI.
 
 ```text
-src/index.js          Cloudflare Worker / API
-public/app.js         Browser application
-public/index.html     Main UI markup
-public/styles.css     UI styles
-migrations/           D1 schema and migrations
-scripts/              User-management utilities
+source-parts/worker/          -> src/index.js
+source-parts/public-app/      -> public/app.js
+src/runtime-guards.js         Domain-neutral server-side validation helpers
+src/extensions/travel/        Optional Travel-only validation and persistence
+public/index.html             Main UI markup
+public/styles.css              UI styles
+migrations/                   D1 schema and migrations
+scripts/                      Validation and user-management utilities
 ```
+
+Run `npm run build` to reconstruct the generated runtime entry files before local development, deployment, or syntax validation.
 
 ## Setup
 
@@ -165,10 +174,21 @@ Each schedule type can independently enable or require:
 - Assignee
 - Resource
 - Organization / location allocation
-- Travel extension
-- Flight information when Travel is enabled
+- Optional domain extensions such as Travel
 
-Default generalized examples include meetings, visits, tasks, and Travel. The legacy airport-transfer type remains available as a Travel-enabled example for compatibility with existing deployments.
+Travel-enabled schedule types can additionally require flight information. Default generalized examples include meetings, visits, tasks, and Travel. The legacy airport-transfer type remains available only as a Travel-enabled compatibility example for existing deployments.
+
+## Runtime validation
+
+The public version keeps operational rules domain-neutral while applying reusable safety checks at the API boundary:
+
+- calendar dates must be real dates rather than merely matching `YYYY-MM-DD`
+- times must be within `00:00` through `23:59`
+- supported uploads are checked by file signature before storage, not only by filename extension or browser-provided MIME type
+
+Extension-specific validation belongs to the extension that owns the data. For example, Travel dates and times are validated inside `src/extensions/travel/`, not inside the core schedule sanitizer.
+
+Domain-specific rules, such as whether two schedules may share a date or whether a Travel itinerary should be split into multiple schedule records, intentionally remain outside the core validation layer.
 
 ## Public repository safety
 
@@ -186,7 +206,7 @@ The public version does **not** contain:
 
 ## Validation
 
-GitHub Actions runs JavaScript syntax checks and applies every migration to a fresh SQLite database on pull requests.
+`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs separate regression suites for the domain-neutral runtime and optional Travel extension. GitHub Actions also applies every migration to a fresh SQLite database on pull requests.
 
 ## Portfolio note
 
@@ -194,4 +214,4 @@ This project demonstrates how a real domain-specific workflow can evolve into a 
 
 ## Version
 
-Public portfolio version **0.4.0**.
+Public portfolio version **0.4.1**.
