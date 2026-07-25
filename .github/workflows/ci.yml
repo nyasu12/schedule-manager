@@ -60,7 +60,7 @@ jobs:
           print('fresh migration database created')
           PY
 
-      - name: Require generic starter types
+      - name: Require generic core starter types
         shell: bash
         run: |
           python3 - <<'PY'
@@ -68,11 +68,11 @@ jobs:
 
           con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
           active = {row[0] for row in con.execute("SELECT id FROM app_purposes_v2 WHERE active=1")}
-          required = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
+          required = {'MEETING', 'VISIT', 'TASK'}
           missing = required - active
           print('active purposes:', sorted(active))
           if missing:
-              raise SystemExit(f'missing generic starter purposes: {sorted(missing)}')
+              raise SystemExit(f'missing generic core starter purposes: {sorted(missing)}')
           PY
 
       - name: Reject active legacy domain types
@@ -88,6 +88,27 @@ jobs:
           print('active legacy purposes:', legacy)
           if legacy:
               raise SystemExit(f'legacy domain-specific purposes are active: {legacy}')
+          PY
+
+      - name: Keep optional Travel disabled by default
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          travel = con.execute(
+              "SELECT active,enable_travel FROM app_purposes_v2 WHERE id='TRAVEL'"
+          ).fetchone()
+          active_extensions = sorted(row[0] for row in con.execute(
+              'SELECT id FROM app_purposes_v2 WHERE active=1 AND enable_travel=1'
+          ))
+          print('Travel template state:', travel)
+          print('active optional extensions:', active_extensions)
+          if travel != (0, 1):
+              raise SystemExit(f'Travel must exist as a disabled extension template: {travel}')
+          if active_extensions:
+              raise SystemExit(f'optional domain extensions are active by default: {active_extensions}')
           PY
 
       - name: Reject locale-specific holiday seeds
