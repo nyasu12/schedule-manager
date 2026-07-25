@@ -1,3 +1,5 @@
+import { normalizeDate, normalizeTime } from '../../src/runtime-guards.js';
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -27,14 +29,6 @@ function safeInt(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 function trim(value, max = 5000) { return String(value ?? '').trim().slice(0, max); }
-function normalizeTime(value) {
-  const v = trim(value, 5);
-  return /^\d{2}:\d{2}$/.test(v) ? v : '';
-}
-function normalizeDate(value) {
-  const v = trim(value, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
-}
 function makeId(prefix) { return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`; }
 function cookieValue(request, name) {
   const raw = request.headers.get('cookie') || '';
