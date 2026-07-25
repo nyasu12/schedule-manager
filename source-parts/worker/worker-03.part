@@ -74,3 +74,31 @@ async function deactivateMaster(request, env, type, id) {
   }
   return json({ ok: true });
 }
+
+async function updateSettings(request, env) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  try {
+    return json({ ok: true, settings: await saveAppSettings(env, await readJson(request)) });
+  } catch (e) {
+    return fail(e?.message || String(e));
+  }
+}
+
+async function saveCustomField(request, env) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  try {
+    const id = await saveCustomFieldDefinition(env, await readJson(request), makeId);
+    return json({ ok: true, id });
+  } catch (e) {
+    return fail(e?.message || String(e));
+  }
+}
+
+async function deactivateCustomField(request, env, id) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  await deactivateCustomFieldDefinition(env, id);
+  return json({ ok: true });
+}
