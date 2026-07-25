@@ -12,6 +12,7 @@ import {
 import {
   appendCustomFieldPersistenceStatements,
   attachCustomFieldValues,
+  deactivateCustomFieldDefinition,
   loadCustomFieldState,
   sanitizeCustomFieldValues,
   saveCustomFieldDefinition,
