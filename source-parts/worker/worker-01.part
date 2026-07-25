@@ -17,6 +17,14 @@ import {
   saveCustomFieldDefinition,
 } from './core/custom-fields.js';
 import { loadAppSettings, saveAppSettings } from './core/settings.js';
+import {
+  appendCoreSchedulePersistenceStatements,
+  canonicalMasterType,
+  deactivateCoreMasterRecord,
+  saveCoreMasterRecord,
+  softDeleteCoreSchedule,
+  updateCoreScheduleStartTime,
+} from './compat/legacy-v04.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
