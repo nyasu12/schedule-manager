@@ -23,9 +23,10 @@ const modules = new Map([
       attachTravelLocationCounts(bySchedule, enabledPurposeIds, data?.locationCounts || []);
     },
     sanitizePayload(body) {
+      const travel = body?.extensions?.travel || {};
       return {
-        flights: sanitizeTravelFlights(body?.flights ?? body?.extensions?.travel?.flights),
-        locationCounts: sanitizeTravelLocationCounts(body?.locations ?? body?.stores),
+        flights: sanitizeTravelFlights(travel.flights ?? body?.flights),
+        locationCounts: sanitizeTravelLocationCounts(travel.locationCounts ?? body?.locations ?? body?.stores),
       };
     },
     appendPersistence(env, statements, scheduleId, payload) {
