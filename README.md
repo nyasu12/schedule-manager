@@ -15,6 +15,7 @@ This repository is a **public portfolio version**. Production credentials, Cloud
 - Generic file attachments stored in Cloudflare R2
 - Unassigned and incomplete-work views
 - Role-based access for administrators, schedule editors, and start-time editors
+- Strict server-side validation for dates, times, and supported uploaded file signatures
 - Optional **Travel extension** for flights, itineraries, OCR, and operational flight checks
 
 ## Optional Travel extension
@@ -62,16 +63,19 @@ Cloudflare Worker
 
 ## Source layout
 
-The application sources are committed directly so the implementation can be reviewed without a generation step.
+The two large runtime entry files are assembled deterministically from ordered source fragments. Smaller reusable modules are committed directly. This keeps the public implementation reviewable while allowing the generated Worker and browser bundles to be validated in CI.
 
 ```text
-src/index.js          Cloudflare Worker / API
-public/app.js         Browser application
-public/index.html     Main UI markup
-public/styles.css     UI styles
-migrations/           D1 schema and migrations
-scripts/              User-management utilities
+source-parts/worker/      -> src/index.js
+source-parts/public-app/  -> public/app.js
+src/runtime-guards.js     Reusable server-side validation helpers
+public/index.html         Main UI markup
+public/styles.css          UI styles
+migrations/               D1 schema and migrations
+scripts/                  Validation and user-management utilities
 ```
+
+Run `npm run build` to reconstruct the generated runtime entry files before local development, deployment, or syntax validation.
 
 ## Setup
 
@@ -170,6 +174,17 @@ Each schedule type can independently enable or require:
 
 Default generalized examples include meetings, visits, tasks, and Travel. The legacy airport-transfer type remains available as a Travel-enabled example for compatibility with existing deployments.
 
+## Runtime validation
+
+The public version keeps operational rules domain-neutral while applying reusable safety checks at the API boundary:
+
+- calendar dates must be real dates rather than merely matching `YYYY-MM-DD`
+- times must be within `00:00` through `23:59`
+- malformed optional flight dates/times are rejected instead of silently discarded
+- supported uploads are checked by file signature before storage, not only by filename extension or browser-provided MIME type
+
+Domain-specific rules, such as whether two schedules may share a date or whether a Travel itinerary should be split into multiple schedule records, intentionally remain outside the core validation layer.
+
 ## Public repository safety
 
 The public version does **not** contain:
@@ -186,7 +201,7 @@ The public version does **not** contain:
 
 ## Validation
 
-GitHub Actions runs JavaScript syntax checks and applies every migration to a fresh SQLite database on pull requests.
+`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs regression tests for reusable runtime validation. GitHub Actions also applies every migration to a fresh SQLite database on pull requests.
 
 ## Portfolio note
 
@@ -194,4 +209,4 @@ This project demonstrates how a real domain-specific workflow can evolve into a 
 
 ## Version
 
-Public portfolio version **0.4.0**.
+Public portfolio version **0.4.1**.
