@@ -137,6 +137,8 @@ npm run db:migrate:remote
 
 Migration `0008_generalize_schedule_manager.sql` adds schedule-type rules, workflow status, generic attachments, generic starter schedule types, and optional Travel configuration while preserving legacy data.
 
+Migration `0009_generic_fresh_defaults.sql` makes untouched fresh installs domain-neutral: only the generic starter schedule types remain active and locale-specific legacy holiday samples are removed. Existing deployments that already contain users or schedules keep their compatibility data unchanged.
+
 ### 6. Create an administrator
 
 No default account or password is included.
@@ -176,7 +178,13 @@ Each schedule type can independently enable or require:
 - Organization / location allocation
 - Optional domain extensions such as Travel
 
-Travel-enabled schedule types can additionally require flight information. Default generalized examples include meetings, visits, tasks, and Travel. The legacy airport-transfer type remains available only as a Travel-enabled compatibility example for existing deployments.
+Fresh installs activate only the generalized examples: meetings, visits, tasks, and Travel. Legacy domain-specific type IDs are retained for backwards compatibility, but remain inactive on untouched new installations. Existing populated deployments preserve their current compatibility data.
+
+## Fresh-install neutrality
+
+A new public installation starts without organization-specific master data or locale-specific calendar assumptions. CI verifies that a fresh database exposes only the generic starter schedule types and does not seed country-specific holidays.
+
+This keeps the default experience reusable for teams in different industries and regions while still allowing optional domain extensions to be enabled deliberately.
 
 ## Runtime validation
 
@@ -206,7 +214,7 @@ The public version does **not** contain:
 
 ## Validation
 
-`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs separate regression suites for the domain-neutral runtime and optional Travel extension. GitHub Actions also applies every migration to a fresh SQLite database on pull requests.
+`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs separate regression suites for the domain-neutral runtime and optional Travel extension. GitHub Actions also applies every migration to a fresh SQLite database and asserts domain-neutral starter types plus zero locale-specific holiday seeds.
 
 ## Portfolio note
 
