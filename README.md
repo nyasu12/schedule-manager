@@ -20,7 +20,9 @@ This repository is a **public portfolio version**. Production credentials, Cloud
 
 ## Optional Travel extension
 
-Travel functionality is an extension of the scheduling platform, not a core assumption. A schedule type can enable the extension without requiring a flight, so ordinary schedules remain valid even when no airline segment is present. Flight requirements can be enabled separately for workflows such as airport transfers; the OCR and flight-verification features are intentionally specialized for air-travel operations.
+Travel functionality is an extension of the scheduling platform, not a core assumption. The Travel template is installed but **disabled by default on untouched fresh installations**. An administrator can enable it only when the deployment actually needs air-travel workflows.
+
+A Travel-enabled schedule type can use the extension without requiring a flight, so ordinary travel schedules remain valid even when no airline segment is present. Flight requirements can be enabled separately for workflows such as airport transfers; the OCR and flight-verification features are intentionally specialized for air-travel operations.
 
 Travel-specific validation, persistence, and API hydration live under `src/extensions/travel/`. The generic schedule sanitizer does not parse flight fields. When a schedule is saved, the selected schedule type is checked first; Travel payloads are only parsed and persisted when that type explicitly enables the Travel extension.
 
@@ -137,7 +139,9 @@ npm run db:migrate:remote
 
 Migration `0008_generalize_schedule_manager.sql` adds schedule-type rules, workflow status, generic attachments, generic starter schedule types, and optional Travel configuration while preserving legacy data.
 
-Migration `0009_generic_fresh_defaults.sql` makes untouched fresh installs domain-neutral: only the generic starter schedule types remain active and locale-specific legacy holiday samples are removed. Existing deployments that already contain users or schedules keep their compatibility data unchanged.
+Migration `0009_generic_fresh_defaults.sql` removes legacy domain defaults and locale-specific holiday samples from untouched fresh installations. Existing deployments that already contain users or schedules keep their compatibility data unchanged.
+
+Migration `0010_optional_extensions_default_off.sql` keeps optional Travel capabilities installed as a reusable template but inactive on untouched fresh installations. Existing populated deployments preserve their current Travel state.
 
 ### 6. Create an administrator
 
@@ -178,13 +182,13 @@ Each schedule type can independently enable or require:
 - Organization / location allocation
 - Optional domain extensions such as Travel
 
-Fresh installs activate only the generalized examples: meetings, visits, tasks, and Travel. Legacy domain-specific type IDs are retained for backwards compatibility, but remain inactive on untouched new installations. Existing populated deployments preserve their current compatibility data.
+Untouched fresh installs activate only the domain-neutral core examples: **Meeting, Visit, and Task**. The Travel schedule type is available as an inactive extension template and can be enabled deliberately from configuration when needed. Legacy domain-specific type IDs are retained for backwards compatibility but stay inactive on untouched new installations.
 
 ## Fresh-install neutrality
 
-A new public installation starts without organization-specific master data or locale-specific calendar assumptions. CI verifies that a fresh database exposes only the generic starter schedule types and does not seed country-specific holidays.
+A new public installation starts without organization-specific master data, locale-specific calendar assumptions, or active domain extensions. CI verifies all three properties.
 
-This keeps the default experience reusable for teams in different industries and regions while still allowing optional domain extensions to be enabled deliberately.
+This keeps the default experience reusable for teams in different industries and regions. Specialized capabilities remain available as opt-in extensions instead of shaping the core workflow.
 
 ## Runtime validation
 
@@ -214,7 +218,9 @@ The public version does **not** contain:
 
 ## Validation
 
-`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs separate regression suites for the domain-neutral runtime and optional Travel extension. GitHub Actions also applies every migration to a fresh SQLite database and asserts domain-neutral starter types plus zero locale-specific holiday seeds.
+`npm run check` performs the public-repository safety scan, rebuilds the generated runtime sources, checks JavaScript syntax, and runs separate regression suites for the domain-neutral runtime and optional Travel extension.
+
+GitHub Actions separately verifies fresh-install neutrality: generic core starter types must exist, legacy domain types must be inactive, optional Travel must exist but remain disabled by default, and locale-specific holiday seeds must be absent.
 
 ## Portfolio note
 
