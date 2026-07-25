@@ -6,14 +6,15 @@
   return json({ ok: true });
 }
 
+import { validatedDate, validatedTime } from './runtime-guards.js';
+
 function sanitizeSchedule(body) {
-  const date = normalizeDate(body.date);
+  const date = validatedDate(body.date, '開始日', true);
   const regionId = trim(body.regionId, 80);
   const purposeId = trim(body.purposeId, 80);
-  if (!date) throw new Error('日付を入力してください。');
-  if (!regionId) throw new Error('地域を選択してください。');
-  if (!purposeId) throw new Error('目的を選択してください。');
-  const returnDate = normalizeDate(body.returnDate);
+  if (!regionId) throw new Error('エリアを選択してください。');
+  if (!purposeId) throw new Error('予定タイプを選択してください。');
+  const returnDate = validatedDate(body.returnDate, '終了日');
   if (returnDate && returnDate < date) throw new Error('終了日は開始日以降にしてください。');
   const stores = Array.isArray(body.stores) ? body.stores.slice(0, 50).map((x) => ({
     companyId: trim(x.companyId, 80), storeId: trim(x.storeId, 80), arrivalCount: Math.max(0, Math.min(999, safeInt(x.arrivalCount))), departureCount: Math.max(0, Math.min(999, safeInt(x.departureCount))), note: trim(x.note, 300),
@@ -27,18 +28,18 @@ function sanitizeSchedule(body) {
     sortOrder: index,
     airlineCode: trim(x.airlineCode, 10).toUpperCase(),
     flightNumber: trim(x.flightNumber, 30).toUpperCase(),
-    flightDate: normalizeDate(x.flightDate),
+    flightDate: validatedDate(x.flightDate, '航空便の搭乗日'),
     origin: trim(x.origin, 80).toUpperCase(),
     destination: trim(x.destination, 80).toUpperCase(),
-    scheduledDeparture: normalizeTime(x.scheduledDeparture),
-    changedDeparture: normalizeTime(x.changedDeparture),
-    scheduledArrival: normalizeTime(x.scheduledArrival),
-    changedArrival: normalizeTime(x.changedArrival),
+    scheduledDeparture: validatedTime(x.scheduledDeparture, '航空便の出発時刻'),
+    changedDeparture: validatedTime(x.changedDeparture, '航空便の変更後出発時刻'),
+    scheduledArrival: validatedTime(x.scheduledArrival, '航空便の到着時刻'),
+    changedArrival: validatedTime(x.changedArrival, '航空便の変更後到着時刻'),
     terminal: trim(x.terminal, 80), gate: trim(x.gate, 80), status: trim(x.status, 80) || '未確認', reservationNumber: trim(x.reservationNumber, 120), lastCheckedAt: trim(x.lastCheckedAt, 50) || null, checkSource: trim(x.checkSource, 120), checkUrl: trim(x.checkUrl, 1000), checkNote: trim(x.checkNote, 1000),
   })).filter((x) => x.flightNumber || x.airlineCode || x.flightDate || x.origin || x.destination || x.reservationNumber || x.direction) : [];
   return {
     id: trim(body.id, 100) || makeId('SCH'), date, returnDate, regionId, purposeId,
-    departureTime: normalizeTime(body.departureTime), workflowStatus, otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars, flights,
+    departureTime: validatedTime(body.departureTime, '開始時刻'), workflowStatus, otherContent: trim(body.otherContent, 1000), otherTransport: trim(body.otherTransport, 500), memo: trim(body.memo, 5000), stores, employees, cars, flights,
   };
 }
 
