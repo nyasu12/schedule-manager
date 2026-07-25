@@ -1,24 +1,35 @@
 import {
   appendTravelPersistenceStatements,
   attachTravelFlights,
+  attachTravelLocationCounts,
   loadTravelFlightRows,
+  loadTravelLocationCountRows,
   sanitizeTravelFlights,
+  sanitizeTravelLocationCounts,
 } from './travel/server.js';
 
 const modules = new Map([
   ['travel', {
     id: 'travel',
     async loadScheduleData(env) {
-      return { flights: await loadTravelFlightRows(env) };
+      const [flights, locationCounts] = await Promise.all([
+        loadTravelFlightRows(env),
+        loadTravelLocationCountRows(env),
+      ]);
+      return { flights, locationCounts };
     },
     attachScheduleData(bySchedule, enabledPurposeIds, data) {
       attachTravelFlights(bySchedule, enabledPurposeIds, data?.flights || []);
+      attachTravelLocationCounts(bySchedule, enabledPurposeIds, data?.locationCounts || []);
     },
     sanitizePayload(body) {
-      return { flights: sanitizeTravelFlights(body?.flights) };
+      return {
+        flights: sanitizeTravelFlights(body?.flights ?? body?.extensions?.travel?.flights),
+        locationCounts: sanitizeTravelLocationCounts(body?.locations ?? body?.stores),
+      };
     },
     appendPersistence(env, statements, scheduleId, payload) {
-      appendTravelPersistenceStatements(env, statements, scheduleId, payload?.flights || []);
+      appendTravelPersistenceStatements(env, statements, scheduleId, payload?.flights || [], payload?.locationCounts || []);
     },
     decoratePurpose(purpose, config) {
       return {
