@@ -1,5 +1,22 @@
 import { normalizeDate, normalizeTime } from './runtime-guards.js';
-import { appendTravelPersistenceStatements, attachTravelFlights, isTravelPurposeEnabled, loadTravelFlightRows, sanitizeTravelFlights } from './extensions/travel/server.js';
+import {
+  appendExtensionPersistenceStatements,
+  attachScheduleExtensions,
+  decoratePurposes,
+  loadExtensionRegistry,
+  loadExtensionScheduleData,
+  normalizeFileCategory,
+  sanitizeScheduleExtensions,
+  savePurposeExtensions,
+} from './extensions/registry.js';
+import {
+  appendCustomFieldPersistenceStatements,
+  attachCustomFieldValues,
+  loadCustomFieldState,
+  sanitizeCustomFieldValues,
+  saveCustomFieldDefinition,
+} from './core/custom-fields.js';
+import { loadAppSettings, saveAppSettings } from './core/settings.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
