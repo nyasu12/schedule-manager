@@ -93,7 +93,6 @@ async function getSession(request, env) {
     if (!ok) return null;
     const payload = JSON.parse(dec.decode(b64urlDecode(data)));
     if (!payload?.u || !payload?.r || Number(payload.exp) < Date.now()) return null;
-    // Role is always refreshed from D1 so a downgraded account cannot keep stale cookie privileges.
     const current = await env.DB.prepare('SELECT username,role,active FROM app_users_v2 WHERE username=?').bind(payload.u).first();
     if (!current || !current.active) return null;
     return { username: current.username, role: current.role };
@@ -120,5 +119,5 @@ async function bootstrap(request, env) {
   if (auth.response) return auth.response;
   const session = auth.session;
   const month = monthKey();
-  const [regions, purposes, holidays, companies, stores, employees, cars, schedules, scheduleStores, scheduleEmployees, scheduleCars, flights, files, usage] = await Promise.all([
-    selectResults(env.DB.prepare('SELECT id,name,sort_order,active FROM app_regions_v2 ORDER BY active DESC,sort_order,name')),
+  const [areas, scheduleTypes, holidays, organizations, locations, assignees, resources, schedules, scheduleLocations, scheduleAssignees, scheduleResources, files, usage] = await Promise.all([
+    selectResults(env.DB.prepare('SELECT id,name,sort_order,active FROM core_areas_v1 ORDER BY active DESC,sort_order,name')),
