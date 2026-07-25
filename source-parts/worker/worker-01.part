@@ -1,4 +1,4 @@
-import { normalizeDate, normalizeTime } from '../../src/runtime-guards.js';
+import { normalizeDate, normalizeTime } from './runtime-guards.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
