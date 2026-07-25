@@ -23,6 +23,7 @@ export async function loadCustomFieldState(env) {
   return {
     definitions: (definitionsResult.results || []).map((row) => ({
       id: row.id,
+      scheduleTypeId: row.purpose_id || '',
       purposeId: row.purpose_id || '',
       key: row.field_key,
       label: row.label,
@@ -44,10 +45,10 @@ export function attachCustomFieldValues(bySchedule, state) {
   }
 }
 
-export async function sanitizeCustomFieldValues(env, purposeId, value) {
+export async function sanitizeCustomFieldValues(env, scheduleTypeId, value) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const result = await env.DB.prepare(`SELECT id,field_type,required,options_json
-    FROM app_custom_fields_v1 WHERE active=1 AND (purpose_id='' OR purpose_id=?) ORDER BY sort_order,label`).bind(purposeId).all();
+    FROM app_custom_fields_v1 WHERE active=1 AND (purpose_id='' OR purpose_id=?) ORDER BY sort_order,label`).bind(scheduleTypeId).all();
   const out = [];
   for (const field of result.results || []) {
     let normalized = trimValue(input[field.id], 5000);
@@ -79,7 +80,7 @@ export function appendCustomFieldPersistenceStatements(env, statements, schedule
 
 export async function saveCustomFieldDefinition(env, body, makeId) {
   const id = trimValue(body?.id, 80) || makeId('FLD');
-  const purposeId = trimValue(body?.purposeId, 80);
+  const scheduleTypeId = trimValue(body?.scheduleTypeId ?? body?.purposeId, 80);
   const key = trimValue(body?.key, 80).replace(/[^a-zA-Z0-9_-]/g, '_');
   const label = trimValue(body?.label, 200);
   const type = FIELD_TYPES.has(body?.type) ? body.type : 'text';
@@ -88,6 +89,10 @@ export async function saveCustomFieldDefinition(env, body, makeId) {
   await env.DB.prepare(`INSERT INTO app_custom_fields_v1(id,purpose_id,field_key,label,field_type,required,sort_order,options_json,active,updated_at)
     VALUES(?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET purpose_id=excluded.purpose_id,field_key=excluded.field_key,label=excluded.label,field_type=excluded.field_type,required=excluded.required,sort_order=excluded.sort_order,options_json=excluded.options_json,active=1,updated_at=CURRENT_TIMESTAMP`)
-    .bind(id, purposeId, key, label, type, body?.required ? 1 : 0, Number(body?.sortOrder || 0), JSON.stringify(options)).run();
+    .bind(id, scheduleTypeId, key, label, type, body?.required ? 1 : 0, Number(body?.sortOrder || 0), JSON.stringify(options)).run();
   return id;
+}
+
+export async function deactivateCustomFieldDefinition(env, id) {
+  await env.DB.prepare('UPDATE app_custom_fields_v1 SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(trimValue(id, 80)).run();
 }
