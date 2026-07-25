@@ -37,5 +37,26 @@ jobs:
           for path in sorted(Path('migrations').glob('*.sql')):
               con.executescript(path.read_text())
               print('applied', path.name)
+
+          active_purposes = {
+              row[0] for row in con.execute(
+                  "SELECT id FROM app_purposes_v2 WHERE active=1 ORDER BY id"
+              )
+          }
+          expected_purposes = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
+          if active_purposes != expected_purposes:
+              raise SystemExit(
+                  f'fresh install purposes must be generic: {sorted(active_purposes)}'
+              )
+
+          holiday_count = con.execute(
+              'SELECT COUNT(*) FROM app_holidays_v2'
+          ).fetchone()[0]
+          if holiday_count != 0:
+              raise SystemExit(
+                  f'fresh install must not seed locale-specific holidays: {holiday_count}'
+              )
+
+          print('fresh-install defaults are domain-neutral')
           print('all migrations applied successfully')
           PY
