@@ -9,7 +9,8 @@
     "deploy": "npm run build && wrangler deploy",
     "check:public": "node scripts/check-public-safety.mjs",
     "test:runtime": "node scripts/test-runtime-guards.mjs",
-    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js && npm run test:runtime",
+    "test:travel": "node scripts/test-travel-extension.mjs",
+    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js && npm run test:runtime && npm run test:travel",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
     "user:set": "node scripts/set-user.mjs"
