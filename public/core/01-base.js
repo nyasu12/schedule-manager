@@ -183,3 +183,6 @@ function renderFilters() {
 function renderStats() {
   const rows = currentMonthSchedules();
   $('totalStat').textContent = String(rows.length);
+  $('confirmedStat').textContent = String(rows.filter((s) => ['confirmed','done'].includes(s.workflowStatus)).length);
+  $('incompleteStat').textContent = String(rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned')).length);
+}
