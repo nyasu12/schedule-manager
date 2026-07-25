@@ -35,8 +35,23 @@ jobs:
       - name: Check Worker syntax
         run: node --check src/index.js
 
-      - name: Check browser source syntax
-        run: npm run check:browser
+      - name: Check browser Core base syntax
+        run: node --check public/core/01-base.js
+
+      - name: Check browser Core render syntax
+        run: node --check public/core/02-render.js
+
+      - name: Check browser Core form syntax
+        run: node --check public/core/03-form.js
+
+      - name: Check browser Core settings syntax
+        run: node --check public/core/04-settings.js
+
+      - name: Check browser Travel extension syntax
+        run: node --check public/extensions/travel.js
+
+      - name: Check browser Core init syntax
+        run: node --check public/core/05-init.js
 
       - name: Run Core runtime regression tests
         run: npm run test:runtime
