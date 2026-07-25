@@ -5,12 +5,37 @@ const qs = (selector, root = document) => root.querySelector(selector);
 const qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const state = {
-  data: { user: null, regions: [], purposes: [], holidays: [], companies: [], stores: [], employees: [], cars: [], schedules: [], usage: { flight: 0, flightLimit: 300, vision: 0, visionLimit: 900, openai: 0, openaiLimit: 300, openaiWeb: 0, openaiWebLimit: 100 } },
+  data: {
+    user: null, settings: { locale: 'auto', timezone: 'UTC' }, extensions: [], customFieldDefinitions: [],
+    areas: [], scheduleTypes: [], holidays: [], organizations: [], locations: [], assignees: [], resources: [], schedules: [], usage: {},
+  },
   mode: 'month',
   viewMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   selectedDate: localDateString(new Date()),
-  masterType: 'company',
+  masterType: 'scheduleType',
 };
+
+const clientExtensions = new Map();
+function registerClientExtension(extension) {
+  if (!extension?.id) throw new Error('Extension id is required');
+  clientExtensions.set(extension.id, extension);
+}
+function scheduleTypeExtensions(type) {
+  return [...clientExtensions.values()].filter((extension) => extension.isEnabled?.(type));
+}
+function extensionMissingReasons(schedule, type) { return scheduleTypeExtensions(type).flatMap((extension) => extension.missingReasons?.(schedule, type) || []); }
+function extensionLocationSuffix(schedule, type, location) { return scheduleTypeExtensions(type).map((extension) => extension.locationSuffix?.(schedule, type, location) || '').join(''); }
+function renderScheduleExtensionDetails(schedule, type) { return scheduleTypeExtensions(type).map((extension) => extension.renderDetails?.(schedule, type) || '').join(''); }
+function extensionFileLabel(file) { for (const extension of clientExtensions.values()) { const label = extension.fileLabel?.(file); if (label) return label; } return ''; }
+function updateExtensionScheduleForm(type) { for (const extension of clientExtensions.values()) extension.onTypeChange?.(type); }
+function openExtensionScheduleForm(schedule, type) { for (const extension of clientExtensions.values()) extension.onFormOpen?.(schedule, type); }
+function collectExtensionPayloads(type) { return Object.fromEntries(scheduleTypeExtensions(type).map((extension) => [extension.id, extension.collectPayload?.(type) || {}])); }
+async function uploadExtensionFiles(type, scheduleId) { const errors = []; for (const extension of scheduleTypeExtensions(type)) errors.push(...(await extension.uploadFiles?.(scheduleId) || [])); return errors; }
+function bindExtensionEvents() { for (const extension of clientExtensions.values()) { extension.injectUi?.(); extension.bindEvents?.(); } }
+function bindExtensionDetailEvents(root) { for (const extension of clientExtensions.values()) extension.bindDetailEvents?.(root); }
+function extensionSettingsFields(type) { return [...clientExtensions.values()].map((extension) => extension.settingsFields?.(type) || '').join(''); }
+function collectExtensionSettings() { return [...clientExtensions.values()].map((extension) => extension.collectSettings?.()).filter(Boolean); }
+function extensionModeMeta(mode) { for (const extension of clientExtensions.values()) if (extension.navigation?.mode === mode) return extension.navigation; return null; }
 
 function localDateString(date) {
   const y = date.getFullYear();
@@ -18,176 +43,140 @@ function localDateString(date) {
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
-}
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c])); }
 function fmtDate(value) {
   if (!value) return '—';
   const d = new Date(`${value}T00:00:00`);
   if (Number.isNaN(d.getTime())) return value;
-  return `${d.getMonth() + 1}月${d.getDate()}日（${'日月火水木金土'[d.getDay()]}）`;
+  const locale = state.data.settings?.locale === 'en' ? 'en-US' : 'ja-JP';
+  return new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' }).format(d);
 }
 function toast(message, ms = 2200) {
-  const el = $('toast');
-  el.textContent = String(message || '');
-  el.classList.add('show');
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove('show'), ms);
+  const el = $('toast'); el.textContent = String(message || ''); el.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove('show'), ms);
 }
-function setBanner(message = '', error = false) {
-  const el = $('statusBanner');
-  el.textContent = message;
-  el.classList.toggle('error', error);
-  el.classList.toggle('ready', !message);
-}
+function setBanner(message = '', error = false) { const el = $('statusBanner'); el.textContent = message; el.classList.toggle('error', error); el.classList.toggle('ready', !message); }
 function openModal(id) { $(id).hidden = false; }
 function closeModal(id) { $(id).hidden = true; }
 function isEditor() { return ['manager', 'admin'].includes(state.data.user?.role); }
 function isTimeEditor() { return state.data.user?.role === 'time_editor'; }
-function canEditDepartureTime() { return ['time_editor','manager','admin'].includes(state.data.user?.role); }
+function canEditStartTime() { return ['time_editor','manager','admin'].includes(state.data.user?.role); }
 function isAdmin() { return state.data.user?.role === 'admin'; }
-function formatJstTimestamp(value) {
-  if (!value) return '';
-  let raw = String(value).trim();
-  // SQLite CURRENT_TIMESTAMP is UTC but has no timezone suffix.
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?$/.test(raw)) raw = raw.replace(' ', 'T') + (raw.length === 16 ? ':00Z' : 'Z');
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return String(value);
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).formatToParts(d).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));
-  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second} JST`;
-}
 
 async function api(url, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
-  if (opts.body && !(opts.body instanceof FormData) && typeof opts.body !== 'string') {
-    opts.headers['content-type'] = 'application/json';
-    opts.body = JSON.stringify(opts.body);
-  }
+  if (opts.body && !(opts.body instanceof FormData) && typeof opts.body !== 'string') { opts.headers['content-type'] = 'application/json'; opts.body = JSON.stringify(opts.body); }
   const response = await fetch(url, opts);
   const type = response.headers.get('content-type') || '';
   const payload = type.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
-  if (!response.ok || payload?.ok === false) {
-    const message = typeof payload === 'object' ? (payload.error || payload.details || `HTTP ${response.status}`) : (payload || `HTTP ${response.status}`);
-    throw new Error(String(message));
-  }
+  if (!response.ok || payload?.ok === false) throw new Error(String(typeof payload === 'object' ? (payload.error || payload.details || `HTTP ${response.status}`) : (payload || `HTTP ${response.status}`)));
   return payload;
 }
 
-function purposeById(id) { return state.data.purposes.find((x) => x.id === id); }
-function purposeName(id) { return purposeById(id)?.name || id || '予定'; }
-function activePurposes() { return state.data.purposes.filter((x) => x.active !== false); }
-function isTravelPurpose(id) { return !!purposeById(id)?.enableTravel; }
+function normalizeBootstrap(data = {}) {
+  data.areas = data.areas || data.regions || [];
+  data.scheduleTypes = data.scheduleTypes || data.purposes || [];
+  data.organizations = data.organizations || data.companies || [];
+  data.locations = data.locations || data.stores || [];
+  data.assignees = data.assignees || data.employees || [];
+  data.resources = data.resources || data.cars || [];
+  data.settings ||= { locale: 'auto', timezone: 'UTC' };
+  data.extensions ||= [];
+  data.customFieldDefinitions ||= [];
+  data.schedules = (data.schedules || []).map((schedule) => ({
+    ...schedule,
+    areaId: schedule.areaId ?? schedule.regionId ?? '',
+    scheduleTypeId: schedule.scheduleTypeId ?? schedule.purposeId ?? '',
+    startTime: schedule.startTime ?? schedule.departureTime ?? '',
+    locations: schedule.locations || schedule.stores || [],
+    assignees: schedule.assignees || schedule.employees || [],
+    resources: schedule.resources || schedule.cars || [],
+    extensions: schedule.extensions || {},
+    customFields: schedule.customFields || {},
+  }));
+  return data;
+}
+
+function scheduleTypeById(id) { return state.data.scheduleTypes.find((x) => x.id === id); }
+function scheduleTypeName(id) { return scheduleTypeById(id)?.name || id || '予定'; }
+function activeScheduleTypes() { return state.data.scheduleTypes.filter((x) => x.active !== false); }
 const workflowStatusLabels = { draft: '下書き', planned: '未確定', confirmed: '確定', in_progress: '進行中', done: '完了', cancelled: 'キャンセル' };
 function workflowStatusLabel(value) { return workflowStatusLabels[value] || '未確定'; }
 function workflowStatusClass(value) { return `status-${String(value || 'planned').replace(/[^a-z_]/g, '')}`; }
-function regionName(id) { return state.data.regions.find((x) => x.id === id)?.name || id || ''; }
-function companyById(id) { return state.data.companies.find((x) => x.id === id); }
-function storeById(id) { return state.data.stores.find((x) => x.id === id); }
-function employeeById(id) { return state.data.employees.find((x) => x.id === id); }
-function carById(id) { return state.data.cars.find((x) => x.id === id); }
+function areaName(id) { return state.data.areas.find((x) => x.id === id)?.name || id || ''; }
+function organizationById(id) { return state.data.organizations.find((x) => x.id === id); }
+function locationById(id) { return state.data.locations.find((x) => x.id === id); }
+function assigneeById(id) { return state.data.assignees.find((x) => x.id === id); }
+function resourceById(id) { return state.data.resources.find((x) => x.id === id); }
 function scheduleColors(schedule) {
-  const colors = schedule.stores.map((x) => companyById(x.companyId)?.color).filter(Boolean);
+  const colors = (schedule.locations || []).map((x) => organizationById(x.organizationId ?? x.companyId)?.color).filter(Boolean);
   return [...new Set(colors.length ? colors : ['#aeb9c7'])];
 }
-function colorStrip(colors) {
-  return `<div class="company-strip">${colors.map((c) => `<i style="background:${escapeHtml(c)}"></i>`).join('')}</div>`;
-}
+function colorStrip(colors) { return `<div class="company-strip">${colors.map((c) => `<i style="background:${escapeHtml(c)}"></i>`).join('')}</div>`; }
 function scheduleMissingReasons(schedule) {
   const reasons = [];
-  const purpose = purposeById(schedule.purposeId) || {};
-  if (purpose.requireTime && !schedule.departureTime) reasons.push('開始時刻');
-  if (purpose.requireAssignee && !schedule.employees?.length) reasons.push('担当者');
-  if (purpose.requireResource && !schedule.cars?.length) reasons.push('リソース');
-  if (purpose.requireFlight && !schedule.flights?.length) reasons.push('航空便');
+  const type = scheduleTypeById(schedule.scheduleTypeId) || {};
+  if (type.requireTime && !schedule.startTime) reasons.push('開始時刻');
+  if (type.requireAssignee && !schedule.assignees?.length) reasons.push('担当者');
+  if (type.requireResource && !schedule.resources?.length) reasons.push('リソース');
+  reasons.push(...extensionMissingReasons(schedule, type));
   return reasons;
 }
 function isIncomplete(schedule) { return scheduleMissingReasons(schedule).length > 0; }
-function arrivalTotal(schedule) { return (schedule.stores || []).reduce((n, x) => n + Number(x.arrivalCount || 0), 0); }
-function departureTotal(schedule) { return (schedule.stores || []).reduce((n, x) => n + Number(x.departureCount || 0), 0); }
-function storeSummary(schedule) {
-  if (!schedule.stores?.length) return '組織・拠点 未入力';
-  return schedule.stores.map((r) => {
-    const company = companyById(r.companyId)?.name || '組織未設定';
-    const store = storeById(r.storeId)?.name || '拠点未設定';
-    return `${company}／${store}`;
-  }).join('、');
+function locationSummary(schedule) {
+  if (!schedule.locations?.length) return '組織・拠点 未入力';
+  return schedule.locations.map((row) => `${organizationById(row.organizationId ?? row.companyId)?.name || '組織未設定'}／${locationById(row.locationId ?? row.storeId)?.name || '拠点未設定'}`).join('、');
 }
-function employeeSummary(schedule) {
-  if (!schedule.employees?.length) return '未割当';
-  return schedule.employees.map((id) => employeeById(id)?.name || id).join('、');
-}
-function carSummary(schedule) {
-  if (!schedule.cars?.length) return '未割当';
-  return schedule.cars.map((id) => carById(id)?.name || id).join('、');
-}
-function flightSummary(f) {
-  const ident = [f.airlineCode, f.flightNumber].filter(Boolean).join('') || '便名 未入力';
-  const route = [f.origin, f.destination].filter(Boolean).join(' → ');
-  const times = [f.scheduledDeparture, f.scheduledArrival].filter(Boolean).join(' → ');
-  return [ident, route, times].filter(Boolean).join('　');
-}
-function flightDetailBox(f) {
-  const originalTimes = [f.scheduledDeparture, f.scheduledArrival].filter(Boolean).join(' → ');
-  const latestTimes = [f.changedDeparture, f.changedArrival].filter(Boolean).join(' → ');
-  const sourceUrl = /^https?:\/\//i.test(f.checkUrl || '') ? f.checkUrl : '';
-  const source = f.checkSource ? (sourceUrl ? `<a class="file-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(f.checkSource)}</a>` : escapeHtml(f.checkSource)) : '';
-  return `<div class="flight-box"><div class="flight-head"><strong>${escapeHtml(f.direction || '航空便')} ${escapeHtml(flightSummary(f))}</strong><span>${escapeHtml(f.status || '未確認')}</span></div>${f.flightDate ? `<div>搭乗日：${escapeHtml(f.flightDate)}</div>` : ''}${originalTimes ? `<div><b>旅程表・登録時刻：</b>${escapeHtml(originalTimes)}</div>` : ''}${latestTimes ? `<div><b>最新確認：</b>${escapeHtml(latestTimes)}</div>` : ''}${f.reservationNumber ? `<div>予約番号：${escapeHtml(f.reservationNumber)}</div>` : ''}${f.terminal || f.gate ? `<div>ターミナル：${escapeHtml(f.terminal || '—')}　ゲート：${escapeHtml(f.gate || '—')}</div>` : ''}${source ? `<div><b>確認元：</b>${source}</div>` : ''}${f.checkNote ? `<div class="flight-check-note">${escapeHtml(f.checkNote)}</div>` : ''}${f.lastCheckedAt ? `<small>最終確認：${escapeHtml(formatJstTimestamp(f.lastCheckedAt))}</small>` : ''}${isEditor() ? `<div class="flight-actions"><button type="button" class="btn small" data-check-flight="${escapeHtml(f.id)}">この便を確認</button></div>` : ''}</div>`;
-}
+function assigneeSummary(schedule) { return schedule.assignees?.length ? schedule.assignees.map((id) => assigneeById(id)?.name || id).join('、') : '未割当'; }
+function resourceSummary(schedule) { return schedule.resources?.length ? schedule.resources.map((id) => resourceById(id)?.name || id).join('、') : '未割当'; }
 
 function currentMonthSchedules() {
   const key = `${state.viewMonth.getFullYear()}-${String(state.viewMonth.getMonth() + 1).padStart(2, '0')}`;
   return filteredBase().filter((s) => s.date.startsWith(key));
 }
 function filteredBase() {
-  const region = $('regionFilter')?.value || '';
-  const purpose = $('purposeFilter')?.value || '';
-  return state.data.schedules.filter((s) => (!region || s.regionId === region) && (!purpose || s.purposeId === purpose));
+  const area = $('regionFilter')?.value || '';
+  const scheduleType = $('purposeFilter')?.value || '';
+  return state.data.schedules.filter((s) => (!area || s.areaId === area) && (!scheduleType || s.scheduleTypeId === scheduleType));
 }
 function modeSchedules() {
   let rows = filteredBase();
-  if (state.mode === 'travel') rows = rows.filter((s) => isTravelPurpose(s.purposeId));
   if (state.mode === 'incomplete') rows = rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned'));
   if (state.mode === 'personstore') {
-    const employee = $('employeeFilter')?.value || '';
-    const store = $('storeFilter')?.value || '';
-    if (employee) rows = rows.filter((s) => s.employees?.includes(employee));
-    if (store) rows = rows.filter((s) => s.stores?.some((r) => r.storeId === store));
+    const assignee = $('employeeFilter')?.value || '', location = $('storeFilter')?.value || '';
+    if (assignee) rows = rows.filter((s) => s.assignees?.includes(assignee));
+    if (location) rows = rows.filter((s) => s.locations?.some((r) => (r.locationId ?? r.storeId) === location));
   }
-  return rows.sort((a, b) => `${a.date} ${a.departureTime || '99:99'}`.localeCompare(`${b.date} ${b.departureTime || '99:99'}`));
+  for (const extension of clientExtensions.values()) rows = extension.filterMode?.(state.mode, rows) || rows;
+  return rows.sort((a, b) => `${a.date} ${a.startTime || '99:99'}`.localeCompare(`${b.date} ${b.startTime || '99:99'}`));
 }
 
+function renderExtensionNavigation() {
+  const slots = qsa('.extension-nav-slot');
+  const buttons = [...clientExtensions.values()].filter((ext) => ext.navigation && ext.isNavigationEnabled?.(state.data)).map((ext) => `<button type="button" class="nav-btn" data-mode="${escapeHtml(ext.navigation.mode)}">${escapeHtml(ext.navigation.label)}</button>`).join('');
+  slots.forEach((slot) => { slot.innerHTML = buttons; });
+  qsa('[data-mode]').forEach((b) => { b.classList.toggle('active', b.dataset.mode === state.mode); b.onclick = () => { state.mode = b.dataset.mode; closeDrawer(); renderMode(); }; });
+  if (extensionModeMeta(state.mode) && ![...clientExtensions.values()].some((ext) => ext.navigation?.mode === state.mode && ext.isNavigationEnabled?.(state.data))) state.mode = 'month';
+}
 function renderSession() {
   const user = state.data.user;
-  $('loginButton').hidden = !!user;
-  $('logoutButton').hidden = !user;
-  $('addScheduleButton').hidden = !isEditor();
+  $('loginButton').hidden = !!user; $('logoutButton').hidden = !user; $('addScheduleButton').hidden = !isEditor();
   qsa('.admin-only').forEach((el) => { el.hidden = !isAdmin(); });
-  const hasTravel = state.data.purposes.some((x) => x.active !== false && x.enableTravel);
-  qsa('.travel-nav').forEach((el) => { el.hidden = !hasTravel; });
-  if (!hasTravel && state.mode === 'travel') state.mode = 'month';
+  renderExtensionNavigation();
   $('sessionLabel').textContent = user ? `${user.username} / ${user.role === 'admin' ? '完全編集' : user.role === 'manager' ? '予定管理' : user.role === 'time_editor' ? '開始時間のみ' : user.role}` : '一般閲覧';
-  const u = state.data.usage || {};
-  $('usageLabel').hidden = !hasTravel;
-  $('usageLabel').textContent = hasTravel ? `Travel拡張：OCR ${u.vision || 0}/${u.visionLimit || 900}・AI ${u.openai || 0}/${u.openaiLimit || 300}・Web ${u.openaiWeb || 0}/${u.openaiWebLimit || 100}・Flight API ${u.flight || 0}/${u.flightLimit || 300}` : '';
+  const texts = [...clientExtensions.values()].map((ext) => ext.usageText?.(state.data) || '').filter(Boolean);
+  $('usageLabel').hidden = !texts.length; $('usageLabel').textContent = texts.join(' / ');
 }
 function renderFilters() {
-  const regionValue = $('regionFilter').value;
-  const purposeValue = $('purposeFilter').value;
-  const employeeValue = $('employeeFilter').value;
-  const storeValue = $('storeFilter').value;
-  $('regionFilter').innerHTML = `<option value="">すべて</option>${state.data.regions.filter((x) => x.active !== false).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  $('purposeFilter').innerHTML = `<option value="">すべて</option>${activePurposes().map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  $('employeeFilter').innerHTML = `<option value="">すべて</option>${state.data.employees.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  $('storeFilter').innerHTML = `<option value="">すべて</option>${state.data.stores.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  if ([...$('regionFilter').options].some((o) => o.value === regionValue)) $('regionFilter').value = regionValue;
-  if ([...$('purposeFilter').options].some((o) => o.value === purposeValue)) $('purposeFilter').value = purposeValue;
-  if ([...$('employeeFilter').options].some((o) => o.value === employeeValue)) $('employeeFilter').value = employeeValue;
-  if ([...$('storeFilter').options].some((o) => o.value === storeValue)) $('storeFilter').value = storeValue;
-  const named = state.mode === 'personstore';
-  $('employeeFilterWrap').hidden = !named;
-  $('storeFilterWrap').hidden = !named;
+  const areaValue = $('regionFilter').value, typeValue = $('purposeFilter').value, assigneeValue = $('employeeFilter').value, locationValue = $('storeFilter').value;
+  $('regionFilter').innerHTML = `<option value="">すべて</option>${state.data.areas.filter((x) => x.active !== false).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  $('purposeFilter').innerHTML = `<option value="">すべて</option>${activeScheduleTypes().map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  $('employeeFilter').innerHTML = `<option value="">すべて</option>${state.data.assignees.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  $('storeFilter').innerHTML = `<option value="">すべて</option>${state.data.locations.filter((x) => x.active).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
+  if ([...$('regionFilter').options].some((o) => o.value === areaValue)) $('regionFilter').value = areaValue;
+  if ([...$('purposeFilter').options].some((o) => o.value === typeValue)) $('purposeFilter').value = typeValue;
+  if ([...$('employeeFilter').options].some((o) => o.value === assigneeValue)) $('employeeFilter').value = assigneeValue;
+  if ([...$('storeFilter').options].some((o) => o.value === locationValue)) $('storeFilter').value = locationValue;
+  const named = state.mode === 'personstore'; $('employeeFilterWrap').hidden = !named; $('storeFilterWrap').hidden = !named;
 }
 function renderStats() {
   const rows = currentMonthSchedules();
