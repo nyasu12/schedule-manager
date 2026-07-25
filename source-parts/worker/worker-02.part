@@ -1,48 +1,106 @@
-    selectResults(env.DB.prepare('SELECT id,name,sort_order,active,enable_travel,require_flight,require_time,require_assignee,require_resource,enable_organization FROM app_purposes_v2 ORDER BY active DESC,sort_order,name')),
+    selectResults(env.DB.prepare('SELECT id,name,sort_order,active,require_time,require_assignee,require_resource,enable_organization FROM core_schedule_types_v1 ORDER BY active DESC,sort_order,name')),
     selectResults(env.DB.prepare('SELECT date,name FROM app_holidays_v2 ORDER BY date')),
-    selectResults(env.DB.prepare('SELECT id,code,name,color,active FROM app_companies_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,company_id,code,name,active FROM app_stores_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,name,region_id,active FROM app_employees_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare('SELECT id,name,region_id,active FROM app_cars_v2 ORDER BY active DESC,name')),
-    selectResults(env.DB.prepare(`SELECT id,date,return_date,region_id,purpose_id,departure_time,workflow_status,other_content,other_transport,memo,created_at,updated_at
-      FROM app_schedules_v2 WHERE deleted_at IS NULL ORDER BY date, COALESCE(departure_time,'99:99'), created_at`)),
-    selectResults(env.DB.prepare('SELECT id,schedule_id,company_id,store_id,arrival_count,departure_count,note FROM app_schedule_stores_v2 ORDER BY id')),
-    selectResults(env.DB.prepare('SELECT schedule_id,employee_id FROM app_schedule_employees_v2')),
-    selectResults(env.DB.prepare('SELECT schedule_id,car_id FROM app_schedule_cars_v2')),
-    loadTravelFlightRows(env),
+    selectResults(env.DB.prepare('SELECT id,code,name,color,active FROM core_organizations_v1 ORDER BY active DESC,name')),
+    selectResults(env.DB.prepare('SELECT id,organization_id,code,name,active FROM core_locations_v1 ORDER BY active DESC,name')),
+    selectResults(env.DB.prepare('SELECT id,name,area_id,active FROM core_assignees_v1 ORDER BY active DESC,name')),
+    selectResults(env.DB.prepare('SELECT id,name,area_id,active FROM core_resources_v1 ORDER BY active DESC,name')),
+    selectResults(env.DB.prepare(`SELECT id,date,return_date,area_id,schedule_type_id,start_time,workflow_status,other_content,other_transport,memo,created_at,updated_at
+      FROM core_schedules_v1 WHERE deleted_at IS NULL ORDER BY date, COALESCE(start_time,'99:99'), created_at`)),
+    selectResults(env.DB.prepare('SELECT id,schedule_id,organization_id,location_id,note FROM core_schedule_locations_v1 ORDER BY id')),
+    selectResults(env.DB.prepare('SELECT schedule_id,assignee_id FROM core_schedule_assignees_v1')),
+    selectResults(env.DB.prepare('SELECT schedule_id,resource_id FROM core_schedule_resources_v1')),
     selectResults(env.DB.prepare('SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_checked_at,created_at FROM app_files_v2 ORDER BY created_at')),
     selectResults(env.DB.prepare('SELECT kind,count FROM app_usage_v2 WHERE month=?').bind(month)),
   ]);
 
-  const bySchedule = new Map(schedules.map((s) => [s.id, {
-    id: s.id,
-    date: s.date,
-    returnDate: s.return_date || '',
-    regionId: s.region_id,
-    purposeId: s.purpose_id,
-    departureTime: s.departure_time || '',
-    workflowStatus: s.workflow_status || 'planned',
-    otherContent: s.other_content || '',
-    otherTransport: s.other_transport || '',
-    memo: s.memo || '',
-    createdAt: s.created_at,
-    updatedAt: s.updated_at,
-    stores: [], employees: [], cars: [], flights: [], files: [],
-  }]));
-  for (const r of scheduleStores) bySchedule.get(r.schedule_id)?.stores.push({ id: r.id, companyId: r.company_id, storeId: r.store_id, arrivalCount: r.arrival_count, departureCount: r.departure_count, note: r.note || '' });
-  for (const r of scheduleEmployees) bySchedule.get(r.schedule_id)?.employees.push(r.employee_id);
-  for (const r of scheduleCars) bySchedule.get(r.schedule_id)?.cars.push(r.car_id);
-  attachTravelFlights(bySchedule, purposes, flights);
-  for (const r of files) bySchedule.get(r.schedule_id)?.files.push({ id: r.id, category: r.category, filename: r.filename, mimeType: r.mime_type, sizeBytes: r.size_bytes, ocrCheckedAt: r.ocr_checked_at || '', createdAt: r.created_at });
+  const [extensionRegistry, extensionData, customFieldState, settings] = await Promise.all([
+    loadExtensionRegistry(env),
+    loadExtensionScheduleData(env),
+    loadCustomFieldState(env),
+    loadAppSettings(env),
+  ]);
+  const genericScheduleTypes = scheduleTypes.map((x) => ({
+    id: x.id,
+    name: x.name,
+    sortOrder: x.sort_order || 0,
+    active: x.active !== 0,
+    requireTime: !!x.require_time,
+    requireAssignee: !!x.require_assignee,
+    requireResource: !!x.require_resource,
+    enableOrganization: x.enable_organization !== 0,
+  }));
+  const decoratedScheduleTypes = decoratePurposes(genericScheduleTypes, extensionRegistry);
+
+  const bySchedule = new Map();
+  for (const row of schedules) {
+    const schedule = {
+      id: row.id,
+      date: row.date,
+      returnDate: row.return_date || '',
+      areaId: row.area_id,
+      scheduleTypeId: row.schedule_type_id,
+      startTime: row.start_time || '',
+      workflowStatus: row.workflow_status || 'planned',
+      otherContent: row.other_content || '',
+      otherTransport: row.other_transport || '',
+      memo: row.memo || '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      locations: [],
+      assignees: [],
+      resources: [],
+      files: [],
+      extensions: {},
+      customFields: {},
+    };
+    // Deprecated API aliases kept temporarily for existing clients.
+    schedule.regionId = schedule.areaId;
+    schedule.purposeId = schedule.scheduleTypeId;
+    schedule.departureTime = schedule.startTime;
+    schedule.stores = schedule.locations;
+    schedule.employees = schedule.assignees;
+    schedule.cars = schedule.resources;
+    schedule.flights = [];
+    bySchedule.set(schedule.id, schedule);
+  }
+  for (const row of scheduleLocations) bySchedule.get(row.schedule_id)?.locations.push({
+    id: row.id,
+    organizationId: row.organization_id,
+    locationId: row.location_id,
+    companyId: row.organization_id,
+    storeId: row.location_id,
+    note: row.note || '',
+  });
+  for (const row of scheduleAssignees) bySchedule.get(row.schedule_id)?.assignees.push(row.assignee_id);
+  for (const row of scheduleResources) bySchedule.get(row.schedule_id)?.resources.push(row.resource_id);
+  attachScheduleExtensions(bySchedule, decoratedScheduleTypes, extensionRegistry, extensionData);
+  attachCustomFieldValues(bySchedule, customFieldState);
+  for (const row of files) bySchedule.get(row.schedule_id)?.files.push({ id: row.id, category: row.category, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes, ocrCheckedAt: row.ocr_checked_at || '', createdAt: row.created_at });
   const usageMap = Object.fromEntries(usage.map((u) => [u.kind, u.count]));
+
+  const publicAreas = areas.map((x) => ({ id: x.id, name: x.name, sortOrder: x.sort_order || 0, active: x.active !== 0 }));
+  const publicOrganizations = organizations.map((x) => ({ id: x.id, code: x.code, name: x.name, color: x.color, active: !!x.active }));
+  const publicLocations = locations.map((x) => ({ id: x.id, organizationId: x.organization_id, companyId: x.organization_id, code: x.code, name: x.name, active: !!x.active }));
+  const publicAssignees = assignees.map((x) => ({ id: x.id, name: x.name, areaId: x.area_id, regionId: x.area_id, active: !!x.active }));
+  const publicResources = resources.map((x) => ({ id: x.id, name: x.name, areaId: x.area_id, regionId: x.area_id, active: !!x.active }));
 
   return json({
     ok: true,
-    version: '0.4.1',
+    version: '0.5.0',
     user: session,
-    regions: regions.map((x) => ({ id: x.id, name: x.name, sortOrder: x.sort_order || 0, active: x.active !== 0 })),
-    purposes: purposes.map((x) => ({ id: x.id, name: x.name, sortOrder: x.sort_order || 0, active: x.active !== 0, enableTravel: !!x.enable_travel, requireFlight: !!x.require_flight, requireTime: !!x.require_time, requireAssignee: !!x.require_assignee, requireResource: !!x.require_resource, enableOrganization: x.enable_organization !== 0 })),
+    settings,
+    extensions: extensionRegistry.extensions,
+    customFieldDefinitions: customFieldState.definitions,
+    areas: publicAreas,
+    scheduleTypes: decoratedScheduleTypes,
+    organizations: publicOrganizations,
+    locations: publicLocations,
+    assignees: publicAssignees,
+    resources: publicResources,
+    // Deprecated bootstrap aliases for v0.4 clients.
+    regions: publicAreas,
+    purposes: decoratedScheduleTypes,
     holidays: holidays.map((x) => ({ date: x.date, name: x.name })),
-    companies: companies.map((x) => ({ id: x.id, code: x.code, name: x.name, color: x.color, active: !!x.active })),
-    stores: stores.map((x) => ({ id: x.id, companyId: x.company_id, code: x.code, name: x.name, active: !!x.active })),
-    employees: employees.map((x) => ({ id: x.id, name: x.name, regionId: x.region_id, active: !!x.active })),
+    companies: publicOrganizations,
+    stores: publicLocations,
+    employees: publicAssignees,
