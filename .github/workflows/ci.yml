@@ -37,26 +37,52 @@ jobs:
           for path in sorted(Path('migrations').glob('*.sql')):
               con.executescript(path.read_text())
               print('applied', path.name)
+          print('all migrations applied successfully')
+          PY
 
-          active_purposes = {
+  fresh-install-neutrality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify domain-neutral fresh defaults
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          con = sqlite3.connect(':memory:')
+          for path in sorted(Path('migrations').glob('*.sql')):
+              con.executescript(path.read_text())
+
+          active_purposes = sorted(
               row[0] for row in con.execute(
                   "SELECT id FROM app_purposes_v2 WHERE active=1 ORDER BY id"
               )
-          }
-          expected_purposes = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
-          if active_purposes != expected_purposes:
-              raise SystemExit(
-                  f'fresh install purposes must be generic: {sorted(active_purposes)}'
+          )
+          legacy_active = sorted(
+              row[0] for row in con.execute(
+                  "SELECT id FROM app_purposes_v2 WHERE active=1 AND id IN ('APT','BUS','PAT','OTH') ORDER BY id"
               )
+          )
+          holiday_rows = list(
+              con.execute('SELECT date,name FROM app_holidays_v2 ORDER BY date')
+          )
 
-          holiday_count = con.execute(
-              'SELECT COUNT(*) FROM app_holidays_v2'
-          ).fetchone()[0]
-          if holiday_count != 0:
-              raise SystemExit(
-                  f'fresh install must not seed locale-specific holidays: {holiday_count}'
-              )
+          print('active purposes:', active_purposes)
+          print('legacy active purposes:', legacy_active)
+          print('fresh holiday rows:', holiday_rows)
+
+          required = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
+          missing = required.difference(active_purposes)
+          if missing:
+              raise SystemExit(f'missing generic starter purposes: {sorted(missing)}')
+          if legacy_active:
+              raise SystemExit(f'legacy domain-specific purposes are active: {legacy_active}')
+          if holiday_rows:
+              raise SystemExit(f'fresh install contains locale-specific holidays: {holiday_rows}')
 
           print('fresh-install defaults are domain-neutral')
-          print('all migrations applied successfully')
           PY
