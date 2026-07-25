@@ -46,43 +46,59 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify domain-neutral fresh defaults
+      - name: Build fresh migration database
         shell: bash
         run: |
           python3 - <<'PY'
           import sqlite3
           from pathlib import Path
 
-          con = sqlite3.connect(':memory:')
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
           for path in sorted(Path('migrations').glob('*.sql')):
               con.executescript(path.read_text())
+          con.commit()
+          print('fresh migration database created')
+          PY
 
-          active_purposes = sorted(
-              row[0] for row in con.execute(
-                  "SELECT id FROM app_purposes_v2 WHERE active=1 ORDER BY id"
-              )
-          )
-          legacy_active = sorted(
-              row[0] for row in con.execute(
-                  "SELECT id FROM app_purposes_v2 WHERE active=1 AND id IN ('APT','BUS','PAT','OTH') ORDER BY id"
-              )
-          )
-          holiday_rows = list(
-              con.execute('SELECT date,name FROM app_holidays_v2 ORDER BY date')
-          )
+      - name: Require generic starter types
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
 
-          print('active purposes:', active_purposes)
-          print('legacy active purposes:', legacy_active)
-          print('fresh holiday rows:', holiday_rows)
-
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          active = {row[0] for row in con.execute("SELECT id FROM app_purposes_v2 WHERE active=1")}
           required = {'MEETING', 'VISIT', 'TASK', 'TRAVEL'}
-          missing = required.difference(active_purposes)
+          missing = required - active
+          print('active purposes:', sorted(active))
           if missing:
               raise SystemExit(f'missing generic starter purposes: {sorted(missing)}')
-          if legacy_active:
-              raise SystemExit(f'legacy domain-specific purposes are active: {legacy_active}')
-          if holiday_rows:
-              raise SystemExit(f'fresh install contains locale-specific holidays: {holiday_rows}')
+          PY
 
-          print('fresh-install defaults are domain-neutral')
+      - name: Reject active legacy domain types
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          legacy = sorted(row[0] for row in con.execute(
+              "SELECT id FROM app_purposes_v2 WHERE active=1 AND id IN ('APT','BUS','PAT','OTH')"
+          ))
+          print('active legacy purposes:', legacy)
+          if legacy:
+              raise SystemExit(f'legacy domain-specific purposes are active: {legacy}')
+          PY
+
+      - name: Reject locale-specific holiday seeds
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-fresh.db')
+          rows = list(con.execute('SELECT date,name FROM app_holidays_v2 ORDER BY date'))
+          print('fresh holiday rows:', rows)
+          if rows:
+              raise SystemExit(f'fresh install contains locale-specific holidays: {rows}')
           PY
