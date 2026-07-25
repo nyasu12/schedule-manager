@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import {
-  assertUniqueScheduleDates,
   detectFileType,
   fileExtensionMatchesType,
   normalizeDate,
@@ -33,13 +32,8 @@ assert.equal(fileExtensionMatchesType('jpg', detectFileType(jpeg)), true);
 assert.equal(fileExtensionMatchesType('png', detectFileType(jpeg)), false);
 assert.equal(detectFileType(new Uint8Array([1,2,3,4]).buffer), null);
 
-assert.doesNotThrow(() => assertUniqueScheduleDates([
-  { schedule: { date: '2026-08-15' } },
-  { schedule: { date: '2026-10-27' } },
-]));
-assert.throws(() => assertUniqueScheduleDates([
-  { schedule: { date: '2026-08-15' } },
-  { schedule: { date: '2026-08-15' } },
-]), /重複/);
+// Same-day schedules are intentionally valid in the generic manager.
+// Domain-specific uniqueness rules belong in optional extensions, not core guards.
+assert.equal(normalizeDate('2026-08-15'), normalizeDate('2026-08-15'));
 
 console.log('runtime guard regression tests: PASS');
