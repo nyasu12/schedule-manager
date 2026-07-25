@@ -23,8 +23,26 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Rebuild and check JavaScript
-        run: npm run check
+      - name: Check public repository safety
+        run: npm run check:public
+
+      - name: Check platform architecture boundaries
+        run: npm run check:architecture
+
+      - name: Build Worker
+        run: npm run build
+
+      - name: Check Worker syntax
+        run: node --check src/index.js
+
+      - name: Check browser source syntax
+        run: npm run check:browser
+
+      - name: Run Core runtime regression tests
+        run: npm run test:runtime
+
+      - name: Run Travel extension regression tests
+        run: npm run test:travel
 
       - name: Validate migrations on a fresh database
         shell: bash
