@@ -5,6 +5,7 @@ function updateScheduleConditionalFields() {
   $('otherContentWrap').hidden = false;
   $('organizationSection').hidden = type.enableOrganization === false;
   renderCustomFieldInputs();
+  syncExtensionLocationRows(type);
   updateExtensionScheduleForm(type);
 }
 
@@ -21,7 +22,11 @@ function addLocationRow(value = {}) {
     locationSelect.innerHTML = `<option value="">未選択</option>${locations.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
     if ([...locationSelect.options].some((o) => o.value === selected)) locationSelect.value = selected;
   }
-  organizationSelect.addEventListener('change', refreshLocations); qs('.row-remove', row).addEventListener('click', () => row.remove()); refreshLocations(); $('storeRows').appendChild(row);
+  organizationSelect.addEventListener('change', refreshLocations);
+  qs('.row-remove', row).addEventListener('click', () => row.remove());
+  refreshLocations();
+  $('storeRows').appendChild(row);
+  decorateExtensionLocationRow(row, value, currentScheduleType());
 }
 
 function customFieldDefinitionsForType(typeId) {
@@ -33,7 +38,8 @@ function renderCustomFieldInputs(schedule = null) {
   const definitions = customFieldDefinitionsForType(typeId);
   $('customFieldsSection').hidden = !definitions.length;
   container.innerHTML = definitions.map((field) => {
-    const value = schedule?.customFields?.[field.id] ?? container.querySelector(`[data-custom-field="${CSS.escape(field.id)}"]`)?.value ?? '';
+    const existing = container.querySelector(`[data-custom-field="${CSS.escape(field.id)}"]`);
+    const value = schedule?.customFields?.[field.id] ?? (existing?.type === 'checkbox' ? String(existing.checked) : existing?.value) ?? '';
     const required = field.required ? 'required' : '';
     if (field.type === 'boolean') return `<label class="check-field"><input type="checkbox" data-custom-field="${escapeHtml(field.id)}" ${String(value) === 'true' ? 'checked' : ''}> ${escapeHtml(field.label)}</label>`;
     if (field.type === 'select') return `<label class="field">${escapeHtml(field.label)}<select data-custom-field="${escapeHtml(field.id)}" ${required}><option value="">未選択</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select></label>`;
@@ -59,7 +65,7 @@ function openScheduleForm(id = '') {
   $('storeRows').innerHTML = ''; if (schedule?.locations?.length) schedule.locations.forEach(addLocationRow); else addLocationRow({});
   setChoiceIds('assignee', schedule?.assignees || []); setChoiceIds('resource', schedule?.resources || []); resetFileInputs(); renderCustomFieldInputs(schedule);
   $('deleteScheduleButton').hidden = !schedule; $('scheduleError').hidden = true;
-  const type = scheduleTypeById($('schedulePurpose').value) || {}; $('organizationSection').hidden = type.enableOrganization === false; openExtensionScheduleForm(schedule, type); openModal('scheduleModal');
+  const type = scheduleTypeById($('schedulePurpose').value) || {}; $('organizationSection').hidden = type.enableOrganization === false; syncExtensionLocationRows(type); openExtensionScheduleForm(schedule, type); openModal('scheduleModal');
 }
 
 function openStartTimeForm(id) {
