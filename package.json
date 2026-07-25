@@ -1,6 +1,6 @@
 {
   "name": "schedule-manager-cloudflare",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,9 +8,10 @@
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "check:public": "node scripts/check-public-safety.mjs",
+    "check:architecture": "node scripts/check-platform-architecture.mjs",
     "test:runtime": "node scripts/test-runtime-guards.mjs",
     "test:travel": "node scripts/test-travel-extension.mjs",
-    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js && npm run test:runtime && npm run test:travel",
+    "check": "npm run check:public && npm run check:architecture && npm run build && node --check src/index.js && node --check public/app.js && npm run test:runtime && npm run test:travel",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
     "user:set": "node scripts/set-user.mjs"
@@ -18,5 +19,5 @@
   "devDependencies": {
     "wrangler": "^4.113.0"
   },
-  "description": "Configurable schedule and resource management web app with optional Travel/OCR integrations, built on Cloudflare Workers, D1, and R2."
+  "description": "Configurable scheduling platform with custom fields and opt-in extension modules, built on Cloudflare Workers, D1, and R2."
 }
