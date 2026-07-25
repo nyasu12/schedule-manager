@@ -6,6 +6,8 @@
   return json({ ok: true, id: s.id });
 }
 
+import { detectFileType, fileExtensionMatchesType } from './runtime-guards.js';
+
 async function deleteSchedule(request, env, id) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
@@ -28,27 +30,6 @@ async function updateDepartureTime(request, env, id) {
 const allowedExt = new Set(['pdf','jpg','jpeg','png','webp','gif','heic','heif']);
 function extension(name) { return name.includes('.') ? name.split('.').pop().toLowerCase() : ''; }
 function fileCategory(value) { return ['attachment','face','ticket','itinerary','arrival_itinerary','departure_itinerary'].includes(value) ? value : ''; }
-function detectUploadedFileType(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const ascii = (start, length) => String.fromCharCode(...bytes.subarray(start, start + length));
-  if (bytes.length >= 5 && ascii(0, 5) === '%PDF-') return { mime: 'application/pdf', kind: 'pdf' };
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { mime: 'image/jpeg', kind: 'jpeg' };
-  if (bytes.length >= 8 && [0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((v, i) => bytes[i] === v)) return { mime: 'image/png', kind: 'png' };
-  if (bytes.length >= 6 && ['GIF87a','GIF89a'].includes(ascii(0, 6))) return { mime: 'image/gif', kind: 'gif' };
-  if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return { mime: 'image/webp', kind: 'webp' };
-  if (bytes.length >= 12 && ascii(4, 4) === 'ftyp') {
-    const brand = ascii(8, 4).toLowerCase();
-    if (['heic','heix','hevc','hevx','heim','heis'].includes(brand)) return { mime: 'image/heic', kind: 'heic' };
-    if (['mif1','msf1'].includes(brand)) return { mime: 'image/heif', kind: 'heif' };
-  }
-  return null;
-}
-function uploadedExtensionMatchesType(ext, detected) {
-  if (!detected) return false;
-  if (detected.kind === 'jpeg') return ext === 'jpg' || ext === 'jpeg';
-  if (detected.kind === 'heic' || detected.kind === 'heif') return ext === 'heic' || ext === 'heif';
-  return ext === detected.kind;
-}
 async function uploadFile(request, env, scheduleId, url) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
@@ -63,8 +44,8 @@ async function uploadFile(request, env, scheduleId, url) {
   const ext = extension(file.name);
   if (!allowedExt.has(ext)) return fail('対応していないファイル形式です。');
   const buffer = await file.arrayBuffer();
-  const detected = detectUploadedFileType(buffer);
-  if (!detected || !uploadedExtensionMatchesType(ext, detected)) return fail('ファイルの拡張子と実際の形式が一致しません。');
+  const detected = detectFileType(buffer);
+  if (!detected || !fileExtensionMatchesType(ext, detected)) return fail('ファイルの拡張子と実際の形式が一致しません。');
   const declaredMime = String(file.type || '').toLowerCase();
   if (declaredMime && declaredMime !== 'application/octet-stream' && declaredMime !== detected.mime) return fail('ブラウザが報告したファイル形式と実際の形式が一致しません。');
   const id = makeId('FIL');
