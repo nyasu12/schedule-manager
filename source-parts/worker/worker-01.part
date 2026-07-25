@@ -1,4 +1,5 @@
 import { normalizeDate, normalizeTime } from './runtime-guards.js';
+import { appendTravelPersistenceStatements, attachTravelFlights, isTravelPurposeEnabled, loadTravelFlightRows, sanitizeTravelFlights } from './extensions/travel/server.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
