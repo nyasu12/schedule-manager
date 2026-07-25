@@ -1,7 +1,3 @@
-  $('confirmedStat').textContent = String(rows.filter((s) => ['confirmed','done'].includes(s.workflowStatus)).length);
-  $('incompleteStat').textContent = String(rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned')).length);
-}
-
 function dateInRange(date, start, end) { return date >= start && date <= end; }
 function renderCalendar() {
   const y = state.viewMonth.getFullYear(), m = state.viewMonth.getMonth();
