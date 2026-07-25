@@ -1,9 +1,3 @@
-  if (!row) return fail('ファイルが見つかりません。', 404);
-  await env.FILES.delete(row.r2_key);
-  await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
-  return json({ ok: true });
-}
-
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
