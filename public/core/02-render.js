@@ -90,7 +90,7 @@ function setChoiceIds(kind, ids) { const prefix = choiceDomPrefix(kind), valid =
 function renderChoicePicker(kind) {
   const prefix = choiceDomPrefix(kind), label = kind === 'assignee' ? '担当者' : 'リソース', picker = $(`${prefix}Picker`), container = $(`${prefix}Choices`), selected = choiceIds(kind), rows = choiceRows(kind), allRows = choiceAllRows(kind);
   picker.innerHTML = `<option value="">${label}を選択してください</option>${rows.filter((x) => !selected.includes(x.id)).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('')}`;
-  const selectedRows = selected.map((id) => allRows.find((x) => x.id === id)).filter(Boolean;
+  const selectedRows = selected.map((id) => allRows.find((x) => x.id === id)).filter(Boolean);
   container.innerHTML = selectedRows.length ? selectedRows.map((x) => `<span class="selected-choice">${escapeHtml(x.name)}<button type="button" aria-label="${escapeHtml(x.name)}を外す" data-remove-choice="${escapeHtml(kind)}" data-choice-id="${escapeHtml(x.id)}">×</button></span>`).join('') : '<span class="choice-empty">未選択でも保存できます。</span>';
   qsa(`[data-remove-choice="${kind}"]`, container).forEach((b) => b.addEventListener('click', () => setChoiceIds(kind, selected.filter((id) => id !== b.dataset.choiceId))));
 }
