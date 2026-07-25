@@ -67,3 +67,8 @@ async function deleteFile(request, env, id) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
   const row = await env.DB.prepare('SELECT r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row) return fail('ファイルが見つかりません。', 404);
+  await env.FILES.delete(row.r2_key);
+  await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+  return json({ ok: true });
+}
