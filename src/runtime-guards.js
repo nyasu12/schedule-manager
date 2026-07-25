@@ -65,13 +65,3 @@ export function fileExtensionMatchesType(ext, detected) {
   if (detected.kind === 'heic' || detected.kind === 'heif') return normalized === 'heic' || normalized === 'heif';
   return normalized === detected.kind;
 }
-
-export function assertUniqueScheduleDates(rows) {
-  const seen = new Set();
-  for (const row of rows || []) {
-    const date = normalizeDate(row?.schedule?.date ?? row?.date);
-    if (!date) continue;
-    if (seen.has(date)) throw new Error(`同じ日付（${date}）の予定が一括保存内で重複しています。`);
-    seen.add(date);
-  }
-}
