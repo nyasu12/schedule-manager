@@ -1,6 +1,6 @@
 {
   "name": "schedule-manager-cloudflare",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "check:public": "node scripts/check-public-safety.mjs",
-    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js",
+    "test:runtime": "node scripts/test-runtime-guards.mjs",
+    "check": "npm run check:public && npm run build && node --check src/index.js && node --check public/app.js && npm run test:runtime",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
     "user:set": "node scripts/set-user.mjs"
