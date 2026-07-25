@@ -18,7 +18,7 @@ async function updateDepartureTime(request, env, id) {
   if (auth.response) return auth.response;
   const body = await readJson(request);
   const departureTime = normalizeTime(body.departureTime);
-  if (body.departureTime && !departureTime) return fail('開始時間はHH:MM形式で入力してください。');
+  if (body.departureTime && !departureTime) return fail('開始時間は00:00〜23:59で入力してください。');
   const exists = await env.DB.prepare('SELECT id FROM app_schedules_v2 WHERE id=? AND deleted_at IS NULL').bind(id).first();
   if (!exists) return fail('予定が見つかりません。', 404);
   await env.DB.prepare('UPDATE app_schedules_v2 SET departure_time=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(departureTime, id).run();
@@ -28,6 +28,27 @@ async function updateDepartureTime(request, env, id) {
 const allowedExt = new Set(['pdf','jpg','jpeg','png','webp','gif','heic','heif']);
 function extension(name) { return name.includes('.') ? name.split('.').pop().toLowerCase() : ''; }
 function fileCategory(value) { return ['attachment','face','ticket','itinerary','arrival_itinerary','departure_itinerary'].includes(value) ? value : ''; }
+function detectUploadedFileType(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const ascii = (start, length) => String.fromCharCode(...bytes.subarray(start, start + length));
+  if (bytes.length >= 5 && ascii(0, 5) === '%PDF-') return { mime: 'application/pdf', kind: 'pdf' };
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { mime: 'image/jpeg', kind: 'jpeg' };
+  if (bytes.length >= 8 && [0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((v, i) => bytes[i] === v)) return { mime: 'image/png', kind: 'png' };
+  if (bytes.length >= 6 && ['GIF87a','GIF89a'].includes(ascii(0, 6))) return { mime: 'image/gif', kind: 'gif' };
+  if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return { mime: 'image/webp', kind: 'webp' };
+  if (bytes.length >= 12 && ascii(4, 4) === 'ftyp') {
+    const brand = ascii(8, 4).toLowerCase();
+    if (['heic','heix','hevc','hevx','heim','heis'].includes(brand)) return { mime: 'image/heic', kind: 'heic' };
+    if (['mif1','msf1'].includes(brand)) return { mime: 'image/heif', kind: 'heif' };
+  }
+  return null;
+}
+function uploadedExtensionMatchesType(ext, detected) {
+  if (!detected) return false;
+  if (detected.kind === 'jpeg') return ext === 'jpg' || ext === 'jpeg';
+  if (detected.kind === 'heic' || detected.kind === 'heif') return ext === 'heic' || ext === 'heif';
+  return ext === detected.kind;
+}
 async function uploadFile(request, env, scheduleId, url) {
   const auth = await requireRole(request, env, ['manager','admin']);
   if (auth.response) return auth.response;
@@ -39,15 +60,20 @@ async function uploadFile(request, env, scheduleId, url) {
   const file = form.get('file');
   if (!(file instanceof File)) return fail('ファイルを選択してください。');
   if (file.size > 20 * 1024 * 1024) return fail('1ファイル20MBまでです。');
-  if (!allowedExt.has(extension(file.name))) return fail('対応していないファイル形式です。');
+  const ext = extension(file.name);
+  if (!allowedExt.has(ext)) return fail('対応していないファイル形式です。');
+  const buffer = await file.arrayBuffer();
+  const detected = detectUploadedFileType(buffer);
+  if (!detected || !uploadedExtensionMatchesType(ext, detected)) return fail('ファイルの拡張子と実際の形式が一致しません。');
+  const declaredMime = String(file.type || '').toLowerCase();
+  if (declaredMime && declaredMime !== 'application/octet-stream' && declaredMime !== detected.mime) return fail('ブラウザが報告したファイル形式と実際の形式が一致しません。');
   const id = makeId('FIL');
   const safeName = file.name.replace(/[\\/\0]/g, '_').slice(0, 180);
   const key = `${scheduleId}/${id}-${safeName}`;
-  const mime = file.type || 'application/octet-stream';
-  await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: mime } });
+  await env.FILES.put(key, buffer, { httpMetadata: { contentType: detected.mime } });
   await env.DB.prepare(`INSERT INTO app_files_v2(id,schedule_id,category,filename,mime_type,size_bytes,r2_key,created_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
-    .bind(id, scheduleId, category, safeName, mime, file.size, key).run();
-  return json({ ok: true, file: { id, category, filename: safeName, mimeType: mime, sizeBytes: file.size } });
+    .bind(id, scheduleId, category, safeName, detected.mime, file.size, key).run();
+  return json({ ok: true, file: { id, category, filename: safeName, mimeType: detected.mime, sizeBytes: file.size } });
 }
 
 async function serveFile(request, env, id) {
