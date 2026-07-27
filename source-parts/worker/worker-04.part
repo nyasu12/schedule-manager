@@ -48,7 +48,7 @@ async function saveSchedule(request, env) {
     return fail(e?.message || String(e));
   }
   const requestedId = trim(body?.id, 100);
-  const existing = requestedId ? await env.DB.prepare('SELECT id,deleted_at FROM core_schedules_v1 WHERE id=?').bind(requestedId).first() : null;
+  const existing = requestedId ? await env.DB.prepare('SELECT id,deleted_at,start_time,memo FROM core_schedules_v1 WHERE id=?').bind(requestedId).first() : null;
   const auth = await requireCapability(request, env, existing ? 'schedule.edit' : 'schedule.create');
   if (auth.response) return auth.response;
 
@@ -57,6 +57,10 @@ async function saveSchedule(request, env) {
   let customFieldValues;
   try {
     schedule = sanitizeSchedule(body);
+    if (existing) {
+      if (!capabilityAllowed(auth.session.capabilities, 'schedule.start_time.edit', auth.session.role)) schedule.startTime = existing.start_time || '';
+      if (!capabilityAllowed(auth.session.capabilities, 'schedule.memo.edit', auth.session.role)) schedule.memo = existing.memo || '';
+    }
     const scheduleType = await env.DB.prepare('SELECT id FROM core_schedule_types_v1 WHERE id=?').bind(schedule.scheduleTypeId).first();
     if (!scheduleType) return fail('予定タイプが見つかりません。');
     extensionPayloads = await sanitizeScheduleExtensions(env, schedule.scheduleTypeId, body);
