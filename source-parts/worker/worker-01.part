@@ -1,4 +1,5 @@
 import { normalizeDate, normalizeTime } from './runtime-guards.js';
+import { capabilityAllowed, resolveUserCapabilities } from './core/capabilities.js';
 import {
   appendExtensionPersistenceStatements,
   attachScheduleExtensions,
@@ -87,7 +88,7 @@ async function hmacKey(secret) {
 }
 async function makeSession(env, user) {
   if (!env.AUTH_SECRET) throw new Error('AUTH_SECRET が設定されていません。');
-  const payload = { u: user.username, r: user.role, exp: Date.now() + 12 * 60 * 60 * 1000 };
+  const payload = { u: user.username, r: user.role, n: user.session_nonce || '', exp: Date.now() + 12 * 60 * 60 * 1000 };
   const data = b64urlEncode(enc.encode(JSON.stringify(payload)));
   const sig = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(env.AUTH_SECRET), enc.encode(data)));
   return `${data}.${b64urlEncode(sig)}`;
@@ -102,9 +103,10 @@ async function getSession(request, env) {
     if (!ok) return null;
     const payload = JSON.parse(dec.decode(b64urlDecode(data)));
     if (!payload?.u || !payload?.r || Number(payload.exp) < Date.now()) return null;
-    const current = await env.DB.prepare('SELECT username,role,active FROM app_users_v2 WHERE username=?').bind(payload.u).first();
-    if (!current || !current.active) return null;
-    return { username: current.username, role: current.role };
+    const current = await env.DB.prepare('SELECT username,role,active,session_nonce FROM app_users_v2 WHERE username=?').bind(payload.u).first();
+    if (!current || !current.active || !payload.n || payload.n !== current.session_nonce) return null;
+    const capabilities = await resolveUserCapabilities(env, current.username, current.role);
+    return { username: current.username, role: current.role, capabilities };
   } catch { return null; }
 }
 async function hashPassword(password, saltHex, iterations) {
@@ -112,10 +114,40 @@ async function hashPassword(password, saltHex, iterations) {
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: hexToBytes(saltHex), iterations }, material, 256);
   return bytesToHex(new Uint8Array(bits));
 }
-async function requireRole(request, env, allowed) {
+async function requireSession(request, env) {
   const session = await getSession(request, env);
-  if (!session || !allowed.includes(session.role)) return { response: fail('ログインが必要です。', 401), session: null };
+  if (!session) return { response: fail('ログインが必要です。', 401), session: null };
   return { response: null, session };
+}
+async function requireRole(request, env, allowed) {
+  const auth = await requireSession(request, env);
+  if (auth.response) return auth;
+  if (!allowed.includes(auth.session.role)) return { response: fail('この操作の権限がありません。', 403), session: auth.session };
+  return auth;
+}
+async function requireCapability(request, env, capability) {
+  const auth = await requireSession(request, env);
+  if (auth.response) return auth;
+  if (!capabilityAllowed(auth.session.capabilities, capability, auth.session.role)) return { response: fail('この操作の権限がありません。', 403), session: auth.session };
+  return auth;
+}
+function auditRequestMetadata(request, env) {
+  if (String(env.AUDIT_CAPTURE_REQUEST_METADATA || '') !== '1') return { ipAddress: '', userAgent: '' };
+  return {
+    ipAddress: trim(request.headers.get('cf-connecting-ip'), 80),
+    userAgent: trim(request.headers.get('user-agent'), 300),
+  };
+}
+async function writeAuditLog(env, request, event = {}) {
+  try {
+    const metadata = auditRequestMetadata(request, env);
+    const details = event.details === undefined ? null : JSON.stringify(event.details).slice(0, 12000);
+    await env.DB.prepare(`INSERT INTO app_audit_logs_v1(id,actor_username,category,action,target_type,target_id,summary,details_json,ip_address,user_agent,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+      .bind(makeId('AUD'), trim(event.actorUsername, 80), trim(event.category, 80), trim(event.action, 100), trim(event.targetType, 80), trim(event.targetId, 120), trim(event.summary, 800), details, metadata.ipAddress, metadata.userAgent).run();
+  } catch (error) {
+    console.error('audit log write failed', error);
+  }
 }
 
 async function selectResults(stmt) {
@@ -124,7 +156,7 @@ async function selectResults(stmt) {
 }
 
 async function bootstrap(request, env) {
-  const auth = await requireRole(request, env, ['time_editor','manager','admin']);
+  const auth = await requireSession(request, env);
   if (auth.response) return auth.response;
   const session = auth.session;
   const month = monthKey();

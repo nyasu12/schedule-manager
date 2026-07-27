@@ -67,7 +67,7 @@ async function visionRecognizeFile(env, file) {
 }
 
 async function previewTravelDocument(request, env) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'extension.execute');
   if (auth.response) return auth.response;
   const form = await request.formData();
   const file = form.get('file');

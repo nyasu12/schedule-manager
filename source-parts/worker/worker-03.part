@@ -1,17 +1,22 @@
     cars: publicResources,
-    schedules: [...bySchedule.values()].map((s) => session.role === 'time_editor' ? {
-      ...s,
-      memo: '',
-      files: [],
-      flights: (s.flights || []).map((f) => ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
-      extensions: s.extensions?.travel ? {
-        ...s.extensions,
-        travel: {
-          ...s.extensions.travel,
-          flights: (s.extensions.travel.flights || []).map((f) => ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
-        },
-      } : s.extensions,
-    } : s),
+    schedules: [...bySchedule.values()].map((s) => {
+      const canViewMemo = capabilityAllowed(session.capabilities, 'schedule.memo.edit', session.role) || capabilityAllowed(session.capabilities, 'schedule.edit', session.role);
+      const canViewFiles = capabilityAllowed(session.capabilities, 'file.read', session.role);
+      const canUseExtensions = capabilityAllowed(session.capabilities, 'extension.execute', session.role);
+      return {
+        ...s,
+        memo: canViewMemo ? s.memo : '',
+        files: canViewFiles ? s.files : [],
+        flights: (s.flights || []).map((f) => canUseExtensions ? f : ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
+        extensions: s.extensions?.travel ? {
+          ...s.extensions,
+          travel: {
+            ...s.extensions.travel,
+            flights: (s.extensions.travel.flights || []).map((f) => canUseExtensions ? f : ({ ...f, reservationNumber: '', checkUrl: '', checkNote: '' })),
+          },
+        } : s.extensions,
+      };
+    }),
     usage: {
       flight: usageMap.flight || 0,
       flightLimit: safeInt(env.FLIGHT_MONTHLY_LIMIT, 300),
@@ -30,7 +35,7 @@ async function login(request, env) {
   const username = trim(body.username, 80);
   const password = String(body.password ?? '');
   if (!username || !password) return fail('ログインIDとパスワードを入力してください。');
-  const user = await env.DB.prepare('SELECT username,password_hash,salt,iterations,role,active FROM app_users_v2 WHERE username=?').bind(username).first();
+  const user = await env.DB.prepare('SELECT username,password_hash,salt,iterations,role,active,session_nonce FROM app_users_v2 WHERE username=?').bind(username).first();
   if (!user || !user.active) return fail('ログインIDまたはパスワードが違います。', 401);
   const hash = await hashPassword(password, user.salt, safeInt(user.iterations, 100000));
   if (hash !== user.password_hash) return fail('ログインIDまたはパスワードが違います。', 401);
@@ -61,6 +66,14 @@ async function saveMaster(request, env, type) {
     const status = canonicalMasterType(type) ? 400 : 404;
     return fail(e?.message || String(e), status);
   }
+  await writeAuditLog(env, request, {
+    actorUsername: auth.session.username,
+    category: 'settings',
+    action: 'master_save',
+    targetType: saved.kind,
+    targetId: saved.id,
+    summary: `${saved.kind} の設定を保存しました`,
+  });
   return json({ ok: true, id: saved.id, type: saved.kind });
 }
 
@@ -72,6 +85,7 @@ async function deactivateMaster(request, env, type, id) {
   } catch (e) {
     return fail(e?.message || String(e), canonicalMasterType(type) ? 400 : 404);
   }
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'settings', action: 'master_deactivate', targetType: canonicalMasterType(type), targetId: id, summary: '設定を無効化しました' });
   return json({ ok: true });
 }
 
@@ -79,7 +93,9 @@ async function updateSettings(request, env) {
   const auth = await requireRole(request, env, ['admin']);
   if (auth.response) return auth.response;
   try {
-    return json({ ok: true, settings: await saveAppSettings(env, await readJson(request)) });
+    const settings = await saveAppSettings(env, await readJson(request));
+    await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'settings', action: 'app_settings_update', targetType: 'settings', targetId: 'app', summary: 'アプリ設定を更新しました', details: settings });
+    return json({ ok: true, settings });
   } catch (e) {
     return fail(e?.message || String(e));
   }
@@ -90,6 +106,7 @@ async function saveCustomField(request, env) {
   if (auth.response) return auth.response;
   try {
     const id = await saveCustomFieldDefinition(env, await readJson(request), makeId);
+    await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'settings', action: 'custom_field_save', targetType: 'customField', targetId: id, summary: 'カスタム項目を保存しました' });
     return json({ ok: true, id });
   } catch (e) {
     return fail(e?.message || String(e));
@@ -100,5 +117,27 @@ async function deactivateCustomField(request, env, id) {
   const auth = await requireRole(request, env, ['admin']);
   if (auth.response) return auth.response;
   await deactivateCustomFieldDefinition(env, id);
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'settings', action: 'custom_field_deactivate', targetType: 'customField', targetId: id, summary: 'カスタム項目を無効化しました' });
   return json({ ok: true });
+}
+
+async function listAuditLogs(request, env, url) {
+  const auth = await requireRole(request, env, ['admin']);
+  if (auth.response) return auth.response;
+  const limit = Math.max(1, Math.min(200, safeInt(url.searchParams.get('limit'), 100)));
+  const rows = await selectResults(env.DB.prepare(`SELECT id,created_at,actor_username,category,action,target_type,target_id,summary,details_json,ip_address,user_agent
+    FROM app_audit_logs_v1 ORDER BY created_at DESC,id DESC LIMIT ?`).bind(limit));
+  return json({ ok: true, logs: rows.map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    actorUsername: row.actor_username,
+    category: row.category,
+    action: row.action,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    summary: row.summary,
+    details: (() => { try { return row.details_json ? JSON.parse(row.details_json) : null; } catch { return null; } })(),
+    ipAddress: row.ip_address || '',
+    userAgent: row.user_agent || '',
+  })) });
 }

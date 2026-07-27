@@ -56,6 +56,9 @@ jobs:
       - name: Run Core runtime regression tests
         run: npm run test:runtime
 
+      - name: Run capability regression tests
+        run: npm run test:capabilities
+
       - name: Run Travel extension regression tests
         run: npm run test:travel
 
@@ -143,7 +146,7 @@ jobs:
               raise SystemExit('Travel extension registry template is missing')
           PY
 
-      - name: Require canonical platform schema
+      - name: Require canonical platform and v0.6 schema
         shell: bash
         run: |
           python3 - <<'PY'
@@ -154,19 +157,40 @@ jobs:
               'core_areas_v1','core_schedule_types_v1','core_organizations_v1','core_locations_v1',
               'core_assignees_v1','core_resources_v1','core_schedules_v1','core_schedule_locations_v1',
               'core_schedule_assignees_v1','core_schedule_resources_v1','app_extensions_v1',
-              'app_purpose_extensions_v1','app_custom_fields_v1','app_schedule_custom_values_v1','app_settings_v1'
+              'app_purpose_extensions_v1','app_custom_fields_v1','app_schedule_custom_values_v1','app_settings_v1',
+              'app_user_capabilities_v1','app_audit_logs_v1','travel_schedule_location_counts_v1'
           }
           existing = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
           missing = required_objects - existing
           if missing:
               raise SystemExit(f'missing platform objects: {sorted(missing)}')
+
+          def columns(table):
+              return {row[1] for row in con.execute(f'PRAGMA table_info({table})')}
+
+          required_columns = {
+              'app_users_v2': {'session_nonce'},
+              'app_files_v2': {'storage_state'},
+              'app_flights_v2': {'check_candidates_json'},
+              'travel_schedule_location_counts_v1': {'arrival_count_known','departure_count_known'},
+          }
+          for table, expected in required_columns.items():
+              absent = expected - columns(table)
+              if absent:
+                  raise SystemExit(f'{table} missing v0.6 columns: {sorted(absent)}')
+
           settings = dict(con.execute('SELECT key,value FROM app_settings_v1'))
           if settings.get('locale') != 'auto' or settings.get('timezone') != 'UTC':
               raise SystemExit(f'unexpected neutral settings: {settings}')
           core_types = {row[0] for row in con.execute('SELECT id FROM core_schedule_types_v1 WHERE active=1')}
           if not {'MEETING','VISIT','TASK'}.issubset(core_types):
               raise SystemExit(f'canonical schedule-type view is incomplete: {sorted(core_types)}')
-          print('canonical platform schema: PASS')
+          if 'TRAVEL' in core_types:
+              raise SystemExit('Travel must remain disabled on a fresh install')
+          users = con.execute('SELECT COUNT(*) FROM app_users_v2').fetchone()[0]
+          if users:
+              raise SystemExit(f'fresh install unexpectedly contains {users} users')
+          print('canonical platform and v0.6 schema: PASS')
           PY
 
       - name: Reject locale-specific holiday seeds

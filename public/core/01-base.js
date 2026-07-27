@@ -4,6 +4,9 @@ const $ = (id) => document.getElementById(id);
 const qs = (selector, root = document) => root.querySelector(selector);
 const qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
 
+const DEFAULT_INCOMPLETE_FILTERS = Object.freeze({ status: false, startTime: false, assignee: false, resource: false, custom: false, extension: false });
+const INCOMPLETE_FILTER_LABELS = Object.freeze({ status: '未確定', startTime: '開始時刻', assignee: '担当者', resource: 'リソース', custom: 'カスタム項目', extension: '拡張機能' });
+
 const state = {
   data: {
     user: null, settings: { locale: 'auto', timezone: 'UTC' }, extensions: [], customFieldDefinitions: [],
@@ -13,6 +16,7 @@ const state = {
   viewMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   selectedDate: localDateString(new Date()),
   masterType: 'scheduleType',
+  incompleteFilters: { ...DEFAULT_INCOMPLETE_FILTERS },
 };
 
 const clientExtensions = new Map();
@@ -20,9 +24,7 @@ function registerClientExtension(extension) {
   if (!extension?.id) throw new Error('Extension id is required');
   clientExtensions.set(extension.id, extension);
 }
-function scheduleTypeExtensions(type) {
-  return [...clientExtensions.values()].filter((extension) => extension.isEnabled?.(type));
-}
+function scheduleTypeExtensions(type) { return [...clientExtensions.values()].filter((extension) => extension.isEnabled?.(type)); }
 function extensionMissingReasons(schedule, type) { return scheduleTypeExtensions(type).flatMap((extension) => extension.missingReasons?.(schedule, type) || []); }
 function extensionLocationSuffix(schedule, type, location) { return scheduleTypeExtensions(type).map((extension) => extension.locationSuffix?.(schedule, type, location) || '').join(''); }
 function decorateExtensionLocationRow(row, value, type) { for (const extension of scheduleTypeExtensions(type)) extension.decorateLocationRow?.(row, value, type); }
@@ -53,16 +55,23 @@ function fmtDate(value) {
   const locale = state.data.settings?.locale === 'en' ? 'en-US' : 'ja-JP';
   return new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' }).format(d);
 }
-function toast(message, ms = 2200) {
-  const el = $('toast'); el.textContent = String(message || ''); el.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove('show'), ms);
-}
+function toast(message, ms = 2200) { const el = $('toast'); el.textContent = String(message || ''); el.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove('show'), ms); }
 function setBanner(message = '', error = false) { const el = $('statusBanner'); el.textContent = message; el.classList.toggle('error', error); el.classList.toggle('ready', !message); }
 function openModal(id) { $(id).hidden = false; }
 function closeModal(id) { $(id).hidden = true; }
-function isEditor() { return ['manager', 'admin'].includes(state.data.user?.role); }
-function isTimeEditor() { return state.data.user?.role === 'time_editor'; }
-function canEditStartTime() { return ['time_editor','manager','admin'].includes(state.data.user?.role); }
 function isAdmin() { return state.data.user?.role === 'admin'; }
+function hasCapability(key) { return isAdmin() || state.data.user?.capabilities?.includes('*') || state.data.user?.capabilities?.includes(key); }
+function canCreateSchedule() { return hasCapability('schedule.create'); }
+function canEditSchedule() { return hasCapability('schedule.edit'); }
+function canDeleteSchedule() { return hasCapability('schedule.delete'); }
+function canEditStartTime() { return hasCapability('schedule.start_time.edit'); }
+function canEditMemo() { return hasCapability('schedule.memo.edit'); }
+function canAddFiles() { return hasCapability('file.add'); }
+function canReadFiles() { return hasCapability('file.read'); }
+function canDeleteFiles() { return hasCapability('file.delete'); }
+function canUseExtensions() { return hasCapability('extension.execute'); }
+function isEditor() { return canCreateSchedule() || canEditSchedule(); }
+function isTimeEditor() { return canEditStartTime() && !isEditor(); }
 
 async function api(url, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
@@ -109,40 +118,47 @@ function organizationById(id) { return state.data.organizations.find((x) => x.id
 function locationById(id) { return state.data.locations.find((x) => x.id === id); }
 function assigneeById(id) { return state.data.assignees.find((x) => x.id === id); }
 function resourceById(id) { return state.data.resources.find((x) => x.id === id); }
-function scheduleColors(schedule) {
-  const colors = (schedule.locations || []).map((x) => organizationById(x.organizationId ?? x.companyId)?.color).filter(Boolean);
-  return [...new Set(colors.length ? colors : ['#aeb9c7'])];
-}
+function scheduleColors(schedule) { const colors = (schedule.locations || []).map((x) => organizationById(x.organizationId ?? x.companyId)?.color).filter(Boolean); return [...new Set(colors.length ? colors : ['#aeb9c7'])]; }
 function colorStrip(colors) { return `<div class="company-strip">${colors.map((c) => `<i style="background:${escapeHtml(c)}"></i>`).join('')}</div>`; }
-function scheduleMissingReasons(schedule) {
-  const reasons = [];
+function customFieldMissing(schedule) {
+  return state.data.customFieldDefinitions.filter((field) => field.active !== false && field.required && (!field.scheduleTypeId || field.scheduleTypeId === schedule.scheduleTypeId) && (schedule.customFields?.[field.id] === undefined || schedule.customFields?.[field.id] === ''));
+}
+function scheduleMissingItems(schedule) {
+  const items = [];
   const type = scheduleTypeById(schedule.scheduleTypeId) || {};
-  if (type.requireTime && !schedule.startTime) reasons.push('開始時刻');
-  if (type.requireAssignee && !schedule.assignees?.length) reasons.push('担当者');
-  if (type.requireResource && !schedule.resources?.length) reasons.push('リソース');
-  reasons.push(...extensionMissingReasons(schedule, type));
-  return reasons;
+  if (type.requireTime && !schedule.startTime) items.push({ key: 'startTime', label: '開始時刻' });
+  if (type.requireAssignee && !schedule.assignees?.length) items.push({ key: 'assignee', label: '担当者' });
+  if (type.requireResource && !schedule.resources?.length) items.push({ key: 'resource', label: 'リソース' });
+  for (const field of customFieldMissing(schedule)) items.push({ key: 'custom', label: field.label || 'カスタム項目' });
+  for (const reason of extensionMissingReasons(schedule, type)) items.push({ key: 'extension', label: reason });
+  return items;
 }
-function isIncomplete(schedule) { return scheduleMissingReasons(schedule).length > 0; }
-function locationSummary(schedule) {
-  if (!schedule.locations?.length) return '組織・拠点 未入力';
-  return schedule.locations.map((row) => `${organizationById(row.organizationId ?? row.companyId)?.name || '組織未設定'}／${locationById(row.locationId ?? row.storeId)?.name || '拠点未設定'}`).join('、');
+function scheduleAttentionItems(schedule) {
+  const items = scheduleMissingItems(schedule);
+  if (['draft','planned'].includes(schedule.workflowStatus || 'planned')) items.unshift({ key: 'status', label: '未確定ステータス' });
+  return items;
 }
+function scheduleMissingReasons(schedule) { return [...new Set(scheduleMissingItems(schedule).map((item) => item.label))]; }
+function isIncomplete(schedule) { return scheduleMissingItems(schedule).length > 0; }
+function needsAttention(schedule) { return scheduleAttentionItems(schedule).length > 0; }
+function selectedIncompleteFilterKeys() { return Object.entries(state.incompleteFilters || {}).filter(([, enabled]) => enabled).map(([key]) => key); }
+function updateIncompleteFilterSummary() {
+  const el = $('incompleteFilterSummary'); if (!el) return;
+  const keys = selectedIncompleteFilterKeys(); el.textContent = keys.length ? keys.map((key) => INCOMPLETE_FILTER_LABELS[key] || key).join('・') : 'すべて';
+}
+function locationSummary(schedule) { if (!schedule.locations?.length) return '組織・拠点 未入力'; return schedule.locations.map((row) => `${organizationById(row.organizationId ?? row.companyId)?.name || '組織未設定'}／${locationById(row.locationId ?? row.storeId)?.name || '拠点未設定'}`).join('、'); }
 function assigneeSummary(schedule) { return schedule.assignees?.length ? schedule.assignees.map((id) => assigneeById(id)?.name || id).join('、') : '未割当'; }
 function resourceSummary(schedule) { return schedule.resources?.length ? schedule.resources.map((id) => resourceById(id)?.name || id).join('、') : '未割当'; }
 
-function currentMonthSchedules() {
-  const key = `${state.viewMonth.getFullYear()}-${String(state.viewMonth.getMonth() + 1).padStart(2, '0')}`;
-  return filteredBase().filter((s) => s.date.startsWith(key));
-}
-function filteredBase() {
-  const area = $('regionFilter')?.value || '';
-  const scheduleType = $('purposeFilter')?.value || '';
-  return state.data.schedules.filter((s) => (!area || s.areaId === area) && (!scheduleType || s.scheduleTypeId === scheduleType));
-}
+function currentMonthSchedules() { const key = `${state.viewMonth.getFullYear()}-${String(state.viewMonth.getMonth() + 1).padStart(2, '0')}`; return filteredBase().filter((s) => s.date.startsWith(key)); }
+function filteredBase() { const area = $('regionFilter')?.value || ''; const scheduleType = $('purposeFilter')?.value || ''; return state.data.schedules.filter((s) => (!area || s.areaId === area) && (!scheduleType || s.scheduleTypeId === scheduleType)); }
 function modeSchedules() {
   let rows = filteredBase();
-  if (state.mode === 'incomplete') rows = rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned'));
+  if (state.mode === 'incomplete') {
+    rows = rows.filter(needsAttention);
+    const selected = new Set(selectedIncompleteFilterKeys());
+    if (selected.size) rows = rows.filter((schedule) => scheduleAttentionItems(schedule).some((item) => selected.has(item.key)));
+  }
   if (state.mode === 'personstore') {
     const assignee = $('employeeFilter')?.value || '', location = $('storeFilter')?.value || '';
     if (assignee) rows = rows.filter((s) => s.assignees?.includes(assignee));
@@ -161,10 +177,10 @@ function renderExtensionNavigation() {
 }
 function renderSession() {
   const user = state.data.user;
-  $('loginButton').hidden = !!user; $('logoutButton').hidden = !user; $('addScheduleButton').hidden = !isEditor();
+  $('loginButton').hidden = !!user; $('logoutButton').hidden = !user; $('addScheduleButton').hidden = !canCreateSchedule();
   qsa('.admin-only').forEach((el) => { el.hidden = !isAdmin(); });
   renderExtensionNavigation();
-  $('sessionLabel').textContent = user ? `${user.username} / ${user.role === 'admin' ? '完全編集' : user.role === 'manager' ? '予定管理' : user.role === 'time_editor' ? '開始時間のみ' : user.role}` : '一般閲覧';
+  $('sessionLabel').textContent = user ? `${user.username} / ${user.role === 'admin' ? '完全権限' : user.role}` : '一般閲覧';
   const texts = [...clientExtensions.values()].map((ext) => ext.usageText?.(state.data) || '').filter(Boolean);
   $('usageLabel').hidden = !texts.length; $('usageLabel').textContent = texts.join(' / ');
 }
@@ -179,10 +195,26 @@ function renderFilters() {
   if ([...$('employeeFilter').options].some((o) => o.value === assigneeValue)) $('employeeFilter').value = assigneeValue;
   if ([...$('storeFilter').options].some((o) => o.value === locationValue)) $('storeFilter').value = locationValue;
   const named = state.mode === 'personstore'; $('employeeFilterWrap').hidden = !named; $('storeFilterWrap').hidden = !named;
+  const incomplete = state.mode === 'incomplete'; if ($('incompleteFilterWrap')) $('incompleteFilterWrap').hidden = !incomplete;
+  qsa('[data-incomplete-filter]', $('incompleteFilterWrap')).forEach((input) => { input.checked = !!state.incompleteFilters?.[input.dataset.incompleteFilter]; });
+  updateIncompleteFilterSummary();
 }
 function renderStats() {
   const rows = currentMonthSchedules();
   $('totalStat').textContent = String(rows.length);
   $('confirmedStat').textContent = String(rows.filter((s) => ['confirmed','done'].includes(s.workflowStatus)).length);
-  $('incompleteStat').textContent = String(rows.filter((s) => isIncomplete(s) || ['draft','planned'].includes(s.workflowStatus || 'planned')).length);
+  $('incompleteStat').textContent = String(rows.filter(needsAttention).length);
+}
+
+function openMonthJump() {
+  const panel = $('monthJumpPanel'); if (!panel) return;
+  $('monthJumpYear').value = String(state.viewMonth.getFullYear()); $('monthJumpMonth').value = String(state.viewMonth.getMonth() + 1); panel.hidden = false;
+}
+function closeMonthJump() { if ($('monthJumpPanel')) $('monthJumpPanel').hidden = true; }
+function jumpToSelectedMonth() {
+  const year = Number($('monthJumpYear').value), month = Number($('monthJumpMonth').value);
+  if (!Number.isInteger(year) || year < 1900 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) { toast('年は1900〜2100、月は1〜12で指定してください。', 3200); return; }
+  state.viewMonth = new Date(year, month - 1, 1);
+  const prefix = `${year}-${String(month).padStart(2, '0')}-`; if (!String(state.selectedDate || '').startsWith(prefix)) state.selectedDate = `${prefix}01`;
+  closeMonthJump(); renderMode();
 }

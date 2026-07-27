@@ -1,6 +1,6 @@
 {
   "name": "schedule-manager-cloudflare",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,14 +11,16 @@
     "check:architecture": "node scripts/check-platform-architecture.mjs",
     "check:browser": "node scripts/check-browser-sources.mjs",
     "test:runtime": "node scripts/test-runtime-guards.mjs",
+    "test:capabilities": "node scripts/test-capabilities.mjs",
     "test:travel": "node scripts/test-travel-extension.mjs",
-    "check": "npm run check:public && npm run check:architecture && npm run build && node --check src/index.js && npm run check:browser && npm run test:runtime && npm run test:travel",
+    "check": "npm run check:public && npm run check:architecture && npm run build && node --check src/index.js && npm run check:browser && npm run test:runtime && npm run test:capabilities && npm run test:travel",
     "db:migrate:remote": "wrangler d1 migrations apply schedule-manager-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply schedule-manager-db --local",
-    "user:set": "node scripts/set-user.mjs"
+    "user:set": "node scripts/set-user.mjs",
+    "capability:set": "node scripts/set-capability.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.113.0"
   },
-  "description": "Configurable scheduling platform with custom fields and opt-in extension modules, built on Cloudflare Workers, D1, and R2."
+  "description": "Configurable scheduling platform with custom fields, capability-based access control, and opt-in extension modules, built on Cloudflare Workers, D1, and R2."
 }

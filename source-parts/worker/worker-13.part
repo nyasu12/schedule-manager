@@ -35,9 +35,9 @@ function possibleChangeNote(row, candidates) {
 async function applyPossibleChangeCheck(env, id, row, candidates) {
   const note = possibleChangeNote(row, candidates);
   await env.DB.prepare(`UPDATE app_flights_v2
-    SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    SET status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?,check_candidates_json=?
     WHERE id=?`)
-    .bind('便変更の可能性あり', 'AeroAPI公開スケジュール', '', note, id).run();
+    .bind('便変更の可能性あり', 'AeroAPI公開スケジュール', '', note, JSON.stringify(candidates.slice(0, 8)), id).run();
   return note;
 }
 async function aeroGet(env, url) {
@@ -61,7 +61,7 @@ function normalizeAeroStatus(f) {
 }
 async function applyFlightCheck(env, id, result) {
   await env.DB.prepare(`UPDATE app_flights_v2
-    SET changed_departure=?,changed_arrival=?,terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?
+    SET changed_departure=?,changed_arrival=?,terminal=?,gate=?,status=?,last_checked_at=CURRENT_TIMESTAMP,check_source=?,check_url=?,check_note=?,check_candidates_json=NULL
     WHERE id=?`)
     .bind(
       normalizeTime(result.changedDeparture), normalizeTime(result.changedArrival), trim(result.terminal, 80), trim(result.gate, 80),

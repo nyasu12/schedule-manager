@@ -2,9 +2,9 @@
 
 A configurable scheduling platform built on Cloudflare Workers, D1, and R2.
 
-The Core is intentionally domain-neutral. Teams can define schedule types, workflow requirements, organizations, locations, assignees, resources, custom fields, locale/timezone settings, and attachments without changing application code. Specialized behavior is added through explicit opt-in extensions.
+The Core is intentionally domain-neutral. Teams can define schedule types, workflow requirements, organizations, locations, assignees, resources, custom fields, locale/timezone settings, attachments, and access capabilities without changing application code. Specialized behavior is added through explicit opt-in extensions.
 
-This repository is a **public portfolio version**. Production credentials, Cloudflare resource IDs, real organization data, staff names, resource data, uploaded files, and production schedules are intentionally excluded.
+This repository is a **public portfolio version**. Production credentials, Cloudflare resource IDs, real organization data, staff names, resource data, uploaded files, production schedules, and private audit records are intentionally excluded.
 
 ## Highlights
 
@@ -15,11 +15,15 @@ This repository is a **public portfolio version**. Production credentials, Cloud
 - Configurable custom fields: text, number, date, time, boolean, URL, and select
 - Generic file attachments stored in Cloudflare R2
 - Deployment-level locale and IANA timezone settings
-- Role-based access for administrators, schedule editors, and start-time editors
+- Role defaults plus per-user capability overrides
+- Session invalidation when credentials or roles change
+- Auditable administrative and schedule mutations
+- Recoverable R2/D1 file lifecycle state
 - Strict server-side validation for real dates, valid clock times, and uploaded file signatures
+- Reason-based incomplete-work filtering and direct year/month navigation
 - Extension Registry for optional domain modules
 - Optional **Travel extension** for flights, itineraries, participant counts, OCR, and operational flight checks
-- Fresh-install neutrality enforced by GitHub Actions
+- Fresh-install neutrality enforced by automated checks
 
 ## Platform architecture
 
@@ -31,6 +35,7 @@ Browser
 │  ├─ Organizations / locations
 │  ├─ Assignees / resources
 │  ├─ Custom fields
+│  ├─ Access-aware actions
 │  └─ Settings
 │
 └─ Extensions
@@ -43,6 +48,8 @@ Browser
 
 Cloudflare Worker
 ├─ Core schedule API
+├─ Capability resolution
+├─ Audit logging
 ├─ Extension Registry
 ├─ Custom-field service
 ├─ Compatibility adapter
@@ -51,6 +58,97 @@ Cloudflare Worker
 ```
 
 Core scheduling does not parse airline fields or apply aviation rules. A schedule is sanitized first as a generic schedule; enabled extension payloads are then delegated to the Extension Registry.
+
+## Generic access model
+
+Version 0.6 keeps the existing roles as safe defaults while allowing per-user capability overrides.
+
+| Role | Default behavior |
+| --- | --- |
+| `admin` | Full access |
+| `manager` | Create/edit/delete schedules, edit start time and memo, manage schedule files, run extension operations |
+| `time_editor` | Change start time only |
+
+Current Core capabilities include:
+
+```text
+schedule.create
+schedule.edit
+schedule.delete
+schedule.start_time.edit
+schedule.memo.edit
+file.add
+file.read
+file.delete
+extension.execute
+```
+
+A deployment can grant or deny an individual capability without creating another database column or application role. This keeps the authorization model extensible for future workflows.
+
+Example:
+
+```bash
+npm run capability:set -- editor schedule.memo.edit allow --local
+npm run capability:set -- editor schedule.delete deny --local
+npm run capability:set -- editor schedule.delete reset --local
+```
+
+`reset` removes the user-specific override and returns that capability to the role default.
+
+Authorization is enforced at the API boundary. Browser controls are also hidden when the current session lacks the corresponding capability, but UI visibility is never treated as the security boundary.
+
+## Session invalidation
+
+Authenticated sessions are signed with `AUTH_SECRET` and also contain a per-user session nonce.
+
+Running `user:set` rotates the nonce, so changing a password or role invalidates previously issued sessions for that user.
+
+```bash
+npm run user:set -- admin admin "<YOUR_STRONG_PASSWORD>" --local
+```
+
+## Audit trail
+
+Administrative configuration changes and important schedule/file mutations are written to `app_audit_logs_v1`.
+
+The admin-only endpoint:
+
+```text
+GET /api/audit-logs
+```
+
+returns the latest audit entries.
+
+Request IP address and user-agent collection are **disabled by default**. A deployment that has a legitimate operational and privacy basis can explicitly opt in with `AUDIT_CAPTURE_REQUEST_METADATA=1`. The generic public version does not require network-identity logging.
+
+## Recoverable file lifecycle
+
+R2 attachments use a small storage state machine:
+
+```text
+pending -> ready -> deleting
+```
+
+A file is not exposed through bootstrap or download APIs until its R2 upload has completed and the database row is `ready`. Failed deletes restore the row to `ready` instead of silently leaving an inconsistent half-deleted record.
+
+The Core validates both the filename extension and the actual file signature before storing an upload.
+
+## Incomplete-work workflow
+
+Schedule types can require a start time, assignee, or resource. Required custom fields and extension-owned requirements also participate in incomplete-work detection.
+
+The incomplete list can be filtered by one or more reasons:
+
+- unconfirmed workflow status
+- missing start time
+- missing assignee
+- missing resource
+- missing required custom field
+- missing extension-owned requirement
+
+Multiple selected reasons use OR semantics, making it easy to isolate the kind of work that needs attention without encoding any particular industry workflow into Core.
+
+The calendar also supports direct year/month navigation in addition to previous/next/current-month controls.
 
 ## Optional Travel extension
 
@@ -64,10 +162,14 @@ When enabled, Travel can provide:
 - Arrival/departure itinerary attachments
 - Optional face-photo attachments for workflows that need them
 - Per-location arrival/departure participant counts
+- Explicit distinction between a known count of zero and an unknown participant count
 - OCR-assisted itinerary parsing with Google Cloud Vision and OpenAI
 - Flight verification with FlightAware AeroAPI
 - Official airline/airport website fallback through the OpenAI Responses API
 - Possible flight-number-change detection without silently replacing saved data
+- Persisted alternative-flight candidates for human review
+
+When a registered flight cannot be verified but same-day/same-route alternatives exist, the extension stores those alternatives as **review candidates**. It does not automatically replace the registered flight number.
 
 The browser implementation lives in `public/extensions/travel.js`. Travel validation and persistence live behind the server Extension Registry and `src/extensions/travel/` modules. Ordinary Meeting, Visit, Task, or user-defined schedule types do not require Travel API keys or aviation data.
 
@@ -93,7 +195,7 @@ Examples include customer name, meeting URL, amount, priority, equipment reading
 
 ## Core terminology and compatibility
 
-Version 0.5 introduces a canonical domain-neutral model:
+The canonical domain-neutral model is:
 
 | Core concept | Compatibility name from earlier versions |
 | --- | --- |
@@ -118,7 +220,7 @@ app_extensions_v1
 app_purpose_extensions_v1
 ```
 
-The Core uses generic extension hooks for loading, validation, persistence, file categories, UI sections, settings, and schedule-detail rendering. Travel is the first reference implementation; another domain module can follow the same boundary without changing the generic schedule model.
+The Core uses generic extension hooks for loading, validation, persistence, file categories, UI sections, settings, and schedule-detail rendering. Travel is the reference implementation; another domain module can follow the same boundary without changing the generic schedule model.
 
 ## Fresh-install neutrality
 
@@ -128,19 +230,11 @@ An untouched new installation starts with only domain-neutral starter types enab
 - Visit
 - Task
 
-It does **not** start with:
+It does **not** start with active airport/transport workflows, active Travel workflows, organization-specific master data, locale-specific holiday seeds, production credentials, or production resource IDs.
 
-- active airport/transport legacy types
-- active Travel workflows
-- organization-specific master data
-- locale-specific holiday seeds
-- production credentials or resource IDs
-
-CI rebuilds a fresh SQLite database from every migration and verifies these properties.
+Automated validation rebuilds a fresh SQLite database from every migration and verifies these properties.
 
 ## Source layout
-
-The browser source is committed directly so the Core/extension boundary is obvious to GitHub readers.
 
 ```text
 public/
@@ -157,6 +251,7 @@ public/
 
 src/
 ├─ core/
+│  ├─ capabilities.js
 │  ├─ custom-fields.js
 │  └─ settings.js
 ├─ extensions/
@@ -173,7 +268,7 @@ migrations/                # D1 schema and migrations
 scripts/                   # build, safety, architecture, and regression checks
 ```
 
-`npm run build` reconstructs only the Worker deployment entry. Browser Core and extension files are normal, directly reviewable source files rather than a generated monolithic bundle.
+`npm run build` reconstructs only the Worker deployment entry. Browser Core and extension files are normal, directly reviewable source files.
 
 ## Architecture guard
 
@@ -181,7 +276,7 @@ scripts/                   # build, safety, architecture, and regression checks
 
 Core browser and generic schedule paths are rejected if aviation-specific assumptions such as flights, airlines, airports, immigration directions, or Travel participant-count columns leak back into them. Travel-specific behavior belongs to the Travel extension.
 
-This turns genericity into a CI-enforced rule rather than a README convention.
+This turns genericity into an automated rule rather than a README convention.
 
 ## Runtime validation
 
@@ -190,10 +285,10 @@ Reusable API-boundary checks include:
 - calendar dates must be real dates rather than merely matching `YYYY-MM-DD`
 - times must be within `00:00` through `23:59`
 - supported uploads are checked by file signature before storage, not only filename or browser MIME type
+- authorization is checked server-side for each protected action
+- extension-specific fields are validated by the extension that owns them
 
-Extension-specific fields are validated by the extension that owns them.
-
-Domain rules that are not universally valid—such as forbidding multiple schedules on the same date or automatically splitting a travel itinerary into multiple schedules—are intentionally not Core rules.
+Domain rules that are not universally valid are intentionally not Core rules.
 
 ## Tech stack
 
@@ -267,7 +362,8 @@ Important migrations:
 - `0008_generalize_schedule_manager.sql` — configurable schedule model and generic starter types
 - `0009_generic_fresh_defaults.sql` — neutral fresh-install defaults
 - `0010_optional_extensions_default_off.sql` — optional Travel defaults to off
-- `0011_platform_architecture.sql` — Extension Registry, custom fields, locale/timezone settings, Travel participant counts, and canonical Core views
+- `0011_platform_architecture.sql` — Extension Registry, custom fields, locale/timezone settings, Travel-owned data, and canonical Core views
+- `0012_operational_hardening.sql` — capabilities, session invalidation, audit trail, recoverable file lifecycle, and Travel operational review state
 
 ### 6. Create an administrator
 
@@ -290,14 +386,6 @@ npm run dev
 npm run deploy
 ```
 
-## Roles
-
-| Role | Permission |
-| --- | --- |
-| `admin` | Full schedule editing and configuration management |
-| `manager` | Schedule editing |
-| `time_editor` | Start-time changes only |
-
 ## Validation
 
 ```bash
@@ -312,21 +400,14 @@ The validation pipeline includes:
 - Worker syntax validation
 - independent syntax validation for every browser Core/extension source file
 - generic runtime regression tests
+- capability model regression tests
 - Travel extension regression tests
-- every D1 migration against a fresh database
+- every D1 migration against a fresh database in CI
 - fresh-install neutrality checks
 
 ## Public repository safety
 
-The public version does **not** contain:
-
-- API keys or authentication secrets
-- production Cloudflare resource IDs
-- default passwords
-- real organization/location/staff/resource master data
-- production schedules
-- uploaded photos or documents
-- production Worker URLs
+The public version does **not** contain API keys, authentication secrets, production Cloudflare resource IDs, default passwords, real organization/location/staff/resource master data, production schedules, uploaded photos/documents, private audit records, or production deployment URLs.
 
 `wrangler.jsonc`, `.dev.vars`, and other local secret files are ignored by Git.
 
@@ -334,6 +415,6 @@ The public version does **not** contain:
 
 This project demonstrates the evolution of a real domain-specific workflow into a configurable platform while preserving useful specialized integrations behind explicit extension boundaries.
 
-The important design choice is not simply renaming airport terminology. The Core scheduling model, browser UI, validation path, custom fields, and schedule persistence are domain-neutral, while Travel is an opt-in extension with its own specialized data and UI behavior.
+The important design choice is not simply renaming airport terminology. The Core scheduling model, browser UI, authorization, validation path, custom fields, audit trail, file lifecycle, and schedule persistence are domain-neutral, while Travel is an opt-in extension with its own specialized data and UI behavior.
 
-**Public portfolio version: 0.5.0**
+**Public portfolio version: 0.6.0**

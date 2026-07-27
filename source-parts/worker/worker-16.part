@@ -54,11 +54,12 @@ export default {
     const path = url.pathname;
     try {
       if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
-      if (path === '/api/health' && request.method === 'GET') return json({ ok: true, version: '0.5.0' });
+      if (path === '/api/health' && request.method === 'GET') return json({ ok: true, version: '0.6.0' });
       if (path === '/api/bootstrap' && request.method === 'GET') return await bootstrap(request, env);
       if (path === '/api/login' && request.method === 'POST') return await login(request, env);
       if (path === '/api/logout' && request.method === 'POST') return logout();
       if (path === '/api/settings' && request.method === 'POST') return await updateSettings(request, env);
+      if (path === '/api/audit-logs' && request.method === 'GET') return await listAuditLogs(request, env, url);
       if (path === '/api/custom-fields' && request.method === 'POST') return await saveCustomField(request, env);
       let match = path.match(/^\/api\/custom-fields\/([^/]+)$/);
       if (match && request.method === 'DELETE') return await deactivateCustomField(request, env, decodeURIComponent(match[1]));
@@ -68,6 +69,8 @@ export default {
       if (path === '/api/extensions/travel/ocr/preview' && request.method === 'POST') return await previewTravelDocument(request, env);
 
       if (path === '/api/schedules' && request.method === 'POST') return await saveSchedule(request, env);
+      match = path.match(/^\/api\/schedules\/([^/]+)\/memo$/);
+      if (match && request.method === 'POST') return await updateMemo(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/schedules\/([^/]+)\/start-time$/);
       if (match && request.method === 'POST') return await updateDepartureTime(request, env, decodeURIComponent(match[1]));
       match = path.match(/^\/api\/schedules\/([^/]+)\/departure-time$/);
