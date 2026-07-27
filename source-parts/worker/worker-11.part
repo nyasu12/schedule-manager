@@ -37,10 +37,10 @@
 }
 
 async function runVision(request, env, id) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'extension.execute');
   if (auth.response) return auth.response;
   if (!env.GOOGLE_VISION_API_KEY) return fail('GOOGLE_VISION_API_KEY が未設定です。', 503);
-  const row = await env.DB.prepare('SELECT id,mime_type,size_bytes,r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare("SELECT id,mime_type,size_bytes,r2_key FROM app_files_v2 WHERE id=? AND storage_state='ready'").bind(id).first();
   if (!row) return fail('ファイルが見つかりません。', 404);
   const mime = String(row.mime_type || '').toLowerCase();
   const supported = ['image/jpeg','image/png','image/webp','image/gif','application/pdf'];
