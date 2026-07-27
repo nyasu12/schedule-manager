@@ -9,7 +9,7 @@
     selectResults(env.DB.prepare('SELECT id,schedule_id,organization_id,location_id,note FROM core_schedule_locations_v1 ORDER BY id')),
     selectResults(env.DB.prepare('SELECT schedule_id,assignee_id FROM core_schedule_assignees_v1')),
     selectResults(env.DB.prepare('SELECT schedule_id,resource_id FROM core_schedule_resources_v1')),
-    selectResults(env.DB.prepare('SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_checked_at,created_at FROM app_files_v2 ORDER BY created_at')),
+    selectResults(env.DB.prepare("SELECT id,schedule_id,category,filename,mime_type,size_bytes,ocr_checked_at,created_at FROM app_files_v2 WHERE storage_state='ready' ORDER BY created_at")),
     selectResults(env.DB.prepare('SELECT kind,count FROM app_usage_v2 WHERE month=?').bind(month)),
   ]);
 
@@ -86,7 +86,7 @@
 
   return json({
     ok: true,
-    version: '0.5.0',
+    version: '0.6.0',
     user: session,
     settings,
     extensions: extensionRegistry.extensions,
