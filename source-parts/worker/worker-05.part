@@ -1,28 +1,48 @@
 import { detectFileType, fileExtensionMatchesType } from './runtime-guards.js';
 
 async function deleteSchedule(request, env, id) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'schedule.delete');
   if (auth.response) return auth.response;
+  const existing = await env.DB.prepare('SELECT id,date FROM core_schedules_v1 WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!existing) return fail('予定が見つかりません。', 404);
   await softDeleteCoreSchedule(env, id);
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'schedule', action: 'schedule_delete', targetType: 'schedule', targetId: id, summary: `${existing.date || id} の予定を削除扱いにしました` });
   return json({ ok: true });
 }
 
 async function updateDepartureTime(request, env, id) {
-  const auth = await requireRole(request, env, ['time_editor','manager','admin']);
+  const auth = await requireCapability(request, env, 'schedule.start_time.edit');
   if (auth.response) return auth.response;
   const body = await readJson(request);
   const raw = body.startTime ?? body.departureTime;
   const startTime = normalizeTime(raw);
   if (raw && !startTime) return fail('開始時間は00:00〜23:59で入力してください。');
+  const before = await env.DB.prepare('SELECT start_time FROM core_schedules_v1 WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!before) return fail('予定が見つかりません。', 404);
   const exists = await updateCoreScheduleStartTime(env, id, startTime);
   if (!exists) return fail('予定が見つかりません。', 404);
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'schedule', action: 'start_time_update', targetType: 'schedule', targetId: id, summary: '開始時間を変更しました', details: { before: before.start_time || '', after: startTime || '' } });
   return json({ ok: true, id, startTime, departureTime: startTime });
+}
+
+async function updateMemo(request, env, id) {
+  const auth = await requireCapability(request, env, 'schedule.memo.edit');
+  if (auth.response) return auth.response;
+  const body = await readJson(request);
+  const memo = trim(body.memo, 5000);
+  const row = await env.DB.prepare('SELECT id,memo FROM core_schedules_v1 WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!row) return fail('予定が見つかりません。', 404);
+  const before = row.memo || '';
+  if (before === memo) return json({ ok: true, id, memo, changed: false });
+  await env.DB.prepare('UPDATE app_schedules_v2 SET memo=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(memo, id).run();
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'schedule', action: 'memo_update', targetType: 'schedule', targetId: id, summary: '予定メモを変更しました', details: { changed: true } });
+  return json({ ok: true, id, memo, changed: true });
 }
 
 const allowedExt = new Set(['pdf','jpg','jpeg','png','webp','gif','heic','heif']);
 function extension(name) { return name.includes('.') ? name.split('.').pop().toLowerCase() : ''; }
 async function uploadFile(request, env, scheduleId, url) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'file.add');
   if (auth.response) return auth.response;
   const category = normalizeFileCategory(url.searchParams.get('category'));
   if (!category) return fail('ファイル区分が不正です。');
@@ -42,16 +62,24 @@ async function uploadFile(request, env, scheduleId, url) {
   const id = makeId('FIL');
   const safeName = file.name.replace(/[\\/\0]/g, '_').slice(0, 180);
   const key = `${scheduleId}/${id}-${safeName}`;
-  await env.FILES.put(key, buffer, { httpMetadata: { contentType: detected.mime } });
-  await env.DB.prepare(`INSERT INTO app_files_v2(id,schedule_id,category,filename,mime_type,size_bytes,r2_key,created_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
-    .bind(id, scheduleId, category, safeName, detected.mime, file.size, key).run();
+  await env.DB.prepare(`INSERT INTO app_files_v2(id,schedule_id,category,filename,mime_type,size_bytes,r2_key,storage_state,created_at) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(id, scheduleId, category, safeName, detected.mime, file.size, key, 'pending').run();
+  try {
+    await env.FILES.put(key, buffer, { httpMetadata: { contentType: detected.mime } });
+    await env.DB.prepare("UPDATE app_files_v2 SET storage_state='ready' WHERE id=?").bind(id).run();
+  } catch (error) {
+    try { await env.FILES.delete(key); } catch {}
+    await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+    return fail('ファイル保存を完了できませんでした。再度お試しください。', 500, error?.message || String(error));
+  }
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'file', action: 'file_add', targetType: 'schedule', targetId: scheduleId, summary: '予定にファイルを追加しました', details: { fileId: id, category, filename: safeName, sizeBytes: file.size } });
   return json({ ok: true, file: { id, category, filename: safeName, mimeType: detected.mime, sizeBytes: file.size } });
 }
 
 async function serveFile(request, env, id) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'file.read');
   if (auth.response) return auth.response;
-  const row = await env.DB.prepare('SELECT filename,mime_type,r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare("SELECT filename,mime_type,r2_key FROM app_files_v2 WHERE id=? AND storage_state='ready'").bind(id).first();
   if (!row) return new Response('Not found', { status: 404 });
   const object = await env.FILES.get(row.r2_key);
   if (!object) return new Response('Not found', { status: 404 });
@@ -64,11 +92,18 @@ async function serveFile(request, env, id) {
 }
 
 async function deleteFile(request, env, id) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'file.delete');
   if (auth.response) return auth.response;
-  const row = await env.DB.prepare('SELECT r2_key FROM app_files_v2 WHERE id=?').bind(id).first();
-  if (!row) return fail('ファイルが見つかりません。', 404);
-  await env.FILES.delete(row.r2_key);
-  await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+  const row = await env.DB.prepare('SELECT r2_key,schedule_id,filename,category,storage_state FROM app_files_v2 WHERE id=?').bind(id).first();
+  if (!row || row.storage_state === 'deleting') return fail('ファイルが見つかりません。', 404);
+  await env.DB.prepare("UPDATE app_files_v2 SET storage_state='deleting' WHERE id=?").bind(id).run();
+  try {
+    await env.FILES.delete(row.r2_key);
+    await env.DB.prepare('DELETE FROM app_files_v2 WHERE id=?').bind(id).run();
+  } catch (error) {
+    await env.DB.prepare("UPDATE app_files_v2 SET storage_state='ready' WHERE id=?").bind(id).run();
+    return fail('ファイル削除を完了できませんでした。再度お試しください。', 500, error?.message || String(error));
+  }
+  await writeAuditLog(env, request, { actorUsername: auth.session.username, category: 'file', action: 'file_delete', targetType: 'schedule', targetId: row.schedule_id || '', summary: '予定ファイルを削除しました', details: { fileId: id, category: row.category || '', filename: row.filename || '' } });
   return json({ ok: true });
 }
