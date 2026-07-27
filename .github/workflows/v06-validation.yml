@@ -1,0 +1,98 @@
+name: v0.6 validation
+
+on:
+  push:
+    branches:
+      - agent/generic-operational-hardening
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run repository checks
+        run: npm run check
+
+      - name: Apply every migration to a fresh database
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sqlite3
+
+          database = '/tmp/schedule-manager-v06.db'
+          con = sqlite3.connect(database)
+          for path in sorted(glob.glob('migrations/*.sql')):
+              with open(path, 'r', encoding='utf-8') as handle:
+                  sql = handle.read()
+              try:
+                  con.executescript(sql)
+              except Exception as exc:
+                  raise SystemExit(f'{path}: {exc}') from exc
+          con.commit()
+          print('fresh migration rebuild: PASS')
+          PY
+
+      - name: Validate v0.6 schema and neutral defaults
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+
+          con = sqlite3.connect('/tmp/schedule-manager-v06.db')
+          objects = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+          required = {
+              'app_user_capabilities_v1',
+              'app_audit_logs_v1',
+              'app_files_v2',
+              'app_flights_v2',
+              'travel_schedule_location_counts_v1',
+              'core_schedule_types_v1',
+          }
+          missing = required - objects
+          if missing:
+              raise SystemExit(f'missing v0.6 objects: {sorted(missing)}')
+
+          def columns(table):
+              return {row[1] for row in con.execute(f'PRAGMA table_info({table})')}
+
+          expected_columns = {
+              'app_users_v2': {'session_nonce'},
+              'app_files_v2': {'storage_state'},
+              'app_flights_v2': {'check_candidates_json'},
+              'travel_schedule_location_counts_v1': {'arrival_count_known', 'departure_count_known'},
+          }
+          for table, expected in expected_columns.items():
+              missing_columns = expected - columns(table)
+              if missing_columns:
+                  raise SystemExit(f'{table} missing columns: {sorted(missing_columns)}')
+
+          users = con.execute('SELECT COUNT(*) FROM app_users_v2').fetchone()[0]
+          if users != 0:
+              raise SystemExit(f'fresh install unexpectedly contains {users} users')
+
+          active_types = {row[0] for row in con.execute('SELECT id FROM core_schedule_types_v1 WHERE active=1')}
+          if not {'MEETING', 'VISIT', 'TASK'}.issubset(active_types):
+              raise SystemExit(f'generic starter types missing: {sorted(active_types)}')
+          if 'TRAVEL' in active_types:
+              raise SystemExit('Travel must remain disabled on a fresh install')
+
+          print('v0.6 schema and neutrality: PASS')
+          PY
