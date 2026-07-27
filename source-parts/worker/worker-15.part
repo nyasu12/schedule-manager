@@ -11,7 +11,7 @@
 }
 
 async function checkFlight(request, env, id) {
-  const auth = await requireRole(request, env, ['manager','admin']);
+  const auth = await requireCapability(request, env, 'extension.execute');
   if (auth.response) return auth.response;
   if (!env.FLIGHTAWARE_API_KEY) return fail('FlightAware APIキーはまだ設定されていません。', 503);
   const row = await env.DB.prepare('SELECT * FROM app_flights_v2 WHERE id=?').bind(id).first();
