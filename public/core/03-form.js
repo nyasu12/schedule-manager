@@ -62,6 +62,8 @@ function openScheduleForm(id = '') {
   const areas = state.data.areas.filter((x) => x.active !== false || x.id === schedule?.areaId), types = state.data.scheduleTypes.filter((x) => x.active !== false || x.id === schedule?.scheduleTypeId);
   setSelectOptions($('scheduleRegion'), areas, schedule?.areaId || areas[0]?.id || ''); setSelectOptions($('schedulePurpose'), types, schedule?.scheduleTypeId || types[0]?.id || '');
   $('workflowStatus').value = schedule?.workflowStatus || 'planned'; $('departureTime').value = schedule?.startTime || ''; $('otherContent').value = schedule?.otherContent || ''; $('otherTransport').value = schedule?.otherTransport || ''; $('scheduleMemo').value = schedule?.memo || '';
+  $('departureTime').disabled = Boolean(schedule && !canEditStartTime());
+  $('scheduleMemo').disabled = Boolean(schedule && !canEditMemo());
   $('storeRows').innerHTML = ''; if (schedule?.locations?.length) schedule.locations.forEach(addLocationRow); else addLocationRow({});
   setChoiceIds('assignee', schedule?.assignees || []); setChoiceIds('resource', schedule?.resources || []); resetFileInputs(); renderCustomFieldInputs(schedule);
   $('deleteScheduleButton').hidden = !schedule || !canDeleteSchedule();
