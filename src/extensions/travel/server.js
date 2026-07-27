@@ -1,11 +1,20 @@
 import { validatedDate, validatedTime } from '../../runtime-guards.js';
 
-function trimValue(value, max = 5000) {
-  return String(value ?? '').trim().slice(0, max);
+function trimValue(value, max = 5000) { return String(value ?? '').trim().slice(0, max); }
+function makeTravelId(prefix) { return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`; }
+function parseJsonArray(value) {
+  if (!value) return [];
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
 }
-
-function makeTravelId(prefix) {
-  return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`;
+function sanitizeCheckCandidates(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 8).map((x) => ({
+    flightNumber: trimValue(x?.flightNumber, 40).toUpperCase(),
+    scheduledDeparture: validatedTime(x?.scheduledDeparture, 'Travel候補の出発時刻'),
+    scheduledArrival: validatedTime(x?.scheduledArrival, 'Travel候補の到着時刻'),
+    origin: trimValue(x?.origin, 80).toUpperCase(),
+    destination: trimValue(x?.destination, 80).toUpperCase(),
+  })).filter((x) => x.flightNumber || x.origin || x.destination || x.scheduledDeparture || x.scheduledArrival);
 }
 
 export function isTravelPurposeEnabled(purpose) {
@@ -35,6 +44,7 @@ export function sanitizeTravelFlights(value) {
     checkSource: trimValue(x?.checkSource, 120),
     checkUrl: trimValue(x?.checkUrl, 1000),
     checkNote: trimValue(x?.checkNote, 1000),
+    checkCandidates: sanitizeCheckCandidates(x?.checkCandidates),
   })).filter((x) => x.flightNumber || x.airlineCode || x.flightDate || x.origin || x.destination || x.reservationNumber || x.direction);
 }
 
@@ -45,17 +55,19 @@ export function sanitizeTravelLocationCounts(value) {
     locationId: trimValue(x?.locationId ?? x?.storeId, 80),
     arrivalCount: Math.max(0, Math.min(999, Number.parseInt(x?.arrivalCount || 0, 10) || 0)),
     departureCount: Math.max(0, Math.min(999, Number.parseInt(x?.departureCount || 0, 10) || 0)),
-  })).filter((x) => x.organizationId || x.locationId || x.arrivalCount || x.departureCount);
+    arrivalCountKnown: x?.arrivalCountKnown !== false,
+    departureCountKnown: x?.departureCountKnown !== false,
+  })).filter((x) => x.organizationId || x.locationId || x.arrivalCount || x.departureCount || !x.arrivalCountKnown || !x.departureCountKnown);
 }
 
 export async function loadTravelFlightRows(env) {
-  const result = await env.DB.prepare(`SELECT id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note
+  const result = await env.DB.prepare(`SELECT id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note,check_candidates_json
     FROM app_flights_v2 ORDER BY schedule_id,sort_order,id`).all();
   return result.results || [];
 }
 
 export async function loadTravelLocationCountRows(env) {
-  const result = await env.DB.prepare(`SELECT schedule_id,organization_id,location_id,arrival_count,departure_count
+  const result = await env.DB.prepare(`SELECT schedule_id,organization_id,location_id,arrival_count,departure_count,arrival_count_known,departure_count_known
     FROM travel_schedule_location_counts_v1 ORDER BY schedule_id,organization_id,location_id`).all();
   return result.results || [];
 }
@@ -95,6 +107,7 @@ export function attachTravelFlights(bySchedule, enabledPurposes, rows) {
       checkSource: row.check_source || '',
       checkUrl: row.check_url || '',
       checkNote: row.check_note || '',
+      checkCandidates: sanitizeCheckCandidates(parseJsonArray(row.check_candidates_json)),
     });
   }
 }
@@ -115,6 +128,8 @@ export function attachTravelLocationCounts(bySchedule, enabledPurposes, rows) {
       const row = scheduleCounts.get(`${organizationId}|${locationId}`);
       location.arrivalCount = Number(row?.arrival_count || 0);
       location.departureCount = Number(row?.departure_count || 0);
+      location.arrivalCountKnown = row ? Number(row.arrival_count_known) !== 0 : true;
+      location.departureCountKnown = row ? Number(row.departure_count_known) !== 0 : true;
     }
   }
 }
@@ -122,17 +137,18 @@ export function attachTravelLocationCounts(bySchedule, enabledPurposes, rows) {
 export function appendTravelPersistenceStatements(env, statements, scheduleId, flights, locationCounts = []) {
   statements.push(env.DB.prepare('DELETE FROM app_flights_v2 WHERE schedule_id=?').bind(scheduleId));
   for (const flight of flights || []) {
-    statements.push(env.DB.prepare(`INSERT INTO app_flights_v2(id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    statements.push(env.DB.prepare(`INSERT INTO app_flights_v2(id,schedule_id,direction,sort_order,airline_code,flight_number,flight_date,origin,destination,scheduled_departure,changed_departure,scheduled_arrival,changed_arrival,terminal,gate,status,reservation_number,last_checked_at,check_source,check_url,check_note,check_candidates_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       flight.id, scheduleId, flight.direction, flight.sortOrder, flight.airlineCode, flight.flightNumber,
       flight.flightDate, flight.origin, flight.destination, flight.scheduledDeparture, flight.changedDeparture,
       flight.scheduledArrival, flight.changedArrival, flight.terminal, flight.gate, flight.status,
       flight.reservationNumber, flight.lastCheckedAt, flight.checkSource, flight.checkUrl, flight.checkNote,
+      flight.checkCandidates?.length ? JSON.stringify(flight.checkCandidates) : null,
     ));
   }
   statements.push(env.DB.prepare('DELETE FROM travel_schedule_location_counts_v1 WHERE schedule_id=?').bind(scheduleId));
   for (const item of locationCounts || []) {
-    statements.push(env.DB.prepare(`INSERT INTO travel_schedule_location_counts_v1(schedule_id,organization_id,location_id,arrival_count,departure_count)
-      VALUES(?,?,?,?,?)`).bind(scheduleId, item.organizationId, item.locationId, item.arrivalCount, item.departureCount));
+    statements.push(env.DB.prepare(`INSERT INTO travel_schedule_location_counts_v1(schedule_id,organization_id,location_id,arrival_count,departure_count,arrival_count_known,departure_count_known)
+      VALUES(?,?,?,?,?,?,?)`).bind(scheduleId, item.organizationId, item.locationId, item.arrivalCount, item.departureCount, item.arrivalCountKnown ? 1 : 0, item.departureCountKnown ? 1 : 0));
   }
 }
