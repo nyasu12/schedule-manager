@@ -41,14 +41,21 @@ function sanitizeSchedule(body) {
 }
 
 async function saveSchedule(request, env) {
-  const auth = await requireRole(request, env, ['manager','admin']);
-  if (auth.response) return auth.response;
   let body;
+  try {
+    body = await readJson(request);
+  } catch (e) {
+    return fail(e?.message || String(e));
+  }
+  const requestedId = trim(body?.id, 100);
+  const existing = requestedId ? await env.DB.prepare('SELECT id FROM core_schedules_v1 WHERE id=? AND deleted_at IS NULL').bind(requestedId).first() : null;
+  const auth = await requireCapability(request, env, existing ? 'schedule.edit' : 'schedule.create');
+  if (auth.response) return auth.response;
+
   let schedule;
   let extensionPayloads;
   let customFieldValues;
   try {
-    body = await readJson(request);
     schedule = sanitizeSchedule(body);
     const scheduleType = await env.DB.prepare('SELECT id FROM core_schedule_types_v1 WHERE id=?').bind(schedule.scheduleTypeId).first();
     if (!scheduleType) return fail('予定タイプが見つかりません。');
@@ -63,5 +70,14 @@ async function saveSchedule(request, env) {
   appendExtensionPersistenceStatements(env, statements, schedule.id, extensionPayloads);
   appendCustomFieldPersistenceStatements(env, statements, schedule.id, customFieldValues);
   await env.DB.batch(statements);
+  await writeAuditLog(env, request, {
+    actorUsername: auth.session.username,
+    category: 'schedule',
+    action: existing ? 'schedule_update' : 'schedule_create',
+    targetType: 'schedule',
+    targetId: schedule.id,
+    summary: `${schedule.date} の予定を${existing ? '更新' : '作成'}しました`,
+    details: { date: schedule.date, scheduleTypeId: schedule.scheduleTypeId, workflowStatus: schedule.workflowStatus },
+  });
   return json({ ok: true, id: schedule.id });
 }
